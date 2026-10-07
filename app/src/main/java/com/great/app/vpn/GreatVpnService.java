@@ -7,6 +7,7 @@ import android.os.IBinder;
 import com.great.app.config.AwgConfig;
 import com.great.app.config.AwgConfigParser;
 import com.great.app.config.SecureConfigStore;
+import com.great.app.core.GreatEngine;
 import com.great.app.transport.AwgTransport;
 import com.great.app.transport.TunnelTransport;
 
@@ -33,14 +34,17 @@ public final class GreatVpnService extends VpnService {
         if (transport != null) return;
         byte[] raw = null;
         try {
+            GreatEngine engine = GreatEngine.instance();
+            engine.reset();
             raw = new SecureConfigStore(this).load();
             AwgConfig config = new AwgConfigParser().parse(raw);
-            TunnelTransport next = new AwgTransport();
+            TunnelTransport next = new AwgTransport(engine.pipeline());
             next.start(this, config, raw);
             transport = next;
         } catch (Exception e) {
             if (transport != null) transport.close();
             transport = null;
+            GreatEngine.instance().reset();
             stopSelf();
         } finally {
             if (raw != null) Arrays.fill(raw, (byte) 0);
@@ -52,6 +56,7 @@ public final class GreatVpnService extends VpnService {
             transport.close();
             transport = null;
         }
+        GreatEngine.instance().reset();
     }
 
     @Override public void onDestroy() { stopEngine(); super.onDestroy(); }

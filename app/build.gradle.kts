@@ -10,8 +10,8 @@ android {
         applicationId = "com.great.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.1.1-build1-awg"
+        versionCode = 3
+        versionName = "0.2.0-build2-spine"
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
         ndk {
             abiFilters += listOf("arm64-v8a")

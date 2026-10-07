@@ -3,60 +3,78 @@ package com.great.app.transport;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
+import android.system.Os;
 import android.system.OsConstants;
 
 import com.great.app.config.AwgConfig;
+import com.great.app.core.PacketDecision;
+import com.great.app.core.PacketDirection;
+import com.great.app.core.PacketEnvelope;
+import com.great.app.core.PacketPipeline;
 
 import org.amnezia.awg.config.Config;
 import org.amnezia.awg.util.SharedLibraryLoader;
 
 import java.io.ByteArrayInputStream;
+import java.io.FileDescriptor;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
 
-import static org.amnezia.awg.GoBackend.awgGetSocketV4;
-import static org.amnezia.awg.GoBackend.awgGetSocketV6;
-import static org.amnezia.awg.GoBackend.awgTurnOff;
-import static org.amnezia.awg.GoBackend.awgTurnOn;
 import static org.amnezia.awg.GoBackend.awgVersion;
 
 /**
- * GREAT's thin adapter around the official AmneziaWG userspace engine.
+ * GREAT transport adapter.
  *
- * This class owns only transport lifecycle. Capability rules stay out of this layer.
- * The official engine is pinned as a git submodule; no FOX binaries or legacy code are used.
+ * Android's real TUN terminates here first. Packets are evaluated by GREAT's
+ * PacketPipeline and, only after a PASS decision, are forwarded over a packet
+ * preserving AF_UNIX bridge to the official AmneziaWG Go engine.
  */
 public final class AwgTransport implements TunnelTransport {
     private static final String SESSION = "GREAT";
     private static final String IFACE = "great0";
+    private static final int MAX_PACKET = 65535;
+
+    private final PacketPipeline pipeline;
+    private final AtomicLong outboundPackets = new AtomicLong();
+    private final AtomicLong inboundPackets = new AtomicLong();
+    private final AtomicLong droppedPackets = new AtomicLong();
 
     private volatile TransportState state = TransportState.STOPPED;
+    private volatile boolean running;
     private int handle = -1;
+    private ParcelFileDescriptor realTun;
+    private FileDescriptor bridgeFd;
+    private Thread outboundThread;
+    private Thread inboundThread;
+
+    public AwgTransport(PacketPipeline pipeline) {
+        this.pipeline = Objects.requireNonNull(pipeline, "pipeline");
+    }
 
     @Override
     public synchronized void start(VpnService vpnService, AwgConfig config, byte[] rawConfig) throws Exception {
-        if (handle >= 0 || state == TransportState.CONNECTED || state == TransportState.CONNECTING) return;
+        if (running || handle >= 0 || state == TransportState.CONNECTED || state == TransportState.CONNECTING) return;
 
         state = TransportState.STARTING;
         int startedHandle = -1;
         try {
-            // The official parser is authoritative for AmneziaWG-specific fields and userspace serialization.
             Config officialConfig = Config.parse(new ByteArrayInputStream(rawConfig));
-
-            // Load the official libwg-go.so produced by the pinned AmneziaWG Android source.
             SharedLibraryLoader.loadSharedLibrary(vpnService, "wg-go");
-            awgVersion(); // Fail before TUN creation if the native bridge cannot be resolved.
+            awgVersion(); // Resolve the official native library before claiming the VPN.
 
+            final int mtu = parseMtu(config.interfaceValue("MTU"));
             VpnService.Builder builder = vpnService.new Builder()
                     .setSession(SESSION)
-                    .setBlocking(true);
+                    .setBlocking(true)
+                    .setMtu(mtu);
 
             addCidrsAsAddresses(builder, required(config.interfaceValue("Address"), "Address"));
             addCidrsAsRoutes(builder, required(config.peerValue("AllowedIPs"), "AllowedIPs"));
 
             String dns = config.interfaceValue("DNS");
             if (dns != null) addDns(builder, dns);
-
-            String mtu = config.interfaceValue("MTU");
-            builder.setMtu(parseMtu(mtu));
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) builder.setMetered(false);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) vpnService.setUnderlyingNetworks(null);
@@ -66,48 +84,171 @@ public final class AwgTransport implements TunnelTransport {
                 builder.allowFamily(OsConstants.AF_INET6);
             }
 
-            state = TransportState.CONNECTING;
-            try (ParcelFileDescriptor tun = builder.establish()) {
-                if (tun == null) throw new IllegalStateException("Android refused to create the VPN TUN interface");
-                int tunFd = tun.detachFd();
-                startedHandle = awgTurnOn(IFACE, tunFd, officialConfig.toAwgUserspaceString());
+            realTun = builder.establish();
+            if (realTun == null) throw new IllegalStateException("Android refused to create the VPN TUN interface");
+
+            FileDescriptor engineSide = new FileDescriptor();
+            bridgeFd = new FileDescriptor();
+            Os.socketpair(OsConstants.AF_UNIX, OsConstants.SOCK_DGRAM, 0, bridgeFd, engineSide);
+
+            int engineFd;
+            try (ParcelFileDescriptor dup = ParcelFileDescriptor.dup(engineSide)) {
+                engineFd = dup.detachFd();
+            } finally {
+                try { Os.close(engineSide); } catch (Exception ignored) { }
             }
 
-            if (startedHandle < 0) throw new IllegalStateException("AmneziaWG activation failed: " + startedHandle);
+            state = TransportState.CONNECTING;
+            startedHandle = GreatAwgBridge.turnOn(IFACE, engineFd, mtu, officialConfig.toAwgUserspaceString());
+            if (startedHandle < 0) throw new IllegalStateException("AmneziaWG bridge activation failed: " + startedHandle);
 
-            // Keep AmneziaWG's own UDP sockets outside the Android VPN to prevent a routing loop.
-            int socket4 = awgGetSocketV4(startedHandle);
-            int socket6 = awgGetSocketV6(startedHandle);
-            if (socket4 >= 0 && !vpnService.protect(socket4)) throw new IllegalStateException("Failed to protect AWG IPv4 socket");
-            if (socket6 >= 0 && !vpnService.protect(socket6)) throw new IllegalStateException("Failed to protect AWG IPv6 socket");
+            protectSocket(vpnService, GreatAwgBridge.getSocketV4(startedHandle), "IPv4");
+            protectSocket(vpnService, GreatAwgBridge.getSocketV6(startedHandle), "IPv6");
 
             handle = startedHandle;
+            running = true;
             state = TransportState.CONNECTED;
+            startPumps();
         } catch (Throwable failure) {
+            running = false;
             if (startedHandle >= 0) {
-                try { awgTurnOff(startedHandle); } catch (Throwable ignored) { }
+                try { GreatAwgBridge.turnOff(startedHandle); } catch (Throwable ignored) { }
             }
             handle = -1;
+            closeBridgeLocked();
+            closeTunLocked();
             state = TransportState.FAILED;
             if (failure instanceof Exception) throw (Exception) failure;
             throw new RuntimeException(failure);
         }
     }
 
-    @Override
-    public TransportState state() {
-        return state;
+    private void startPumps() {
+        outboundThread = new Thread(this::pumpOutbound, "GREAT-TUN-Out");
+        inboundThread = new Thread(this::pumpInbound, "GREAT-AWG-In");
+        outboundThread.start();
+        inboundThread.start();
     }
 
-    @Override
-    public synchronized void close() {
+    private void pumpOutbound() {
+        byte[] packet = new byte[MAX_PACKET];
+        try {
+            while (running) {
+                ParcelFileDescriptor tun = realTun;
+                FileDescriptor bridge = bridgeFd;
+                if (tun == null || bridge == null) return;
+                int length = Os.read(tun.getFileDescriptor(), packet, 0, packet.length);
+                if (length <= 0) continue;
+                outboundPackets.incrementAndGet();
+                applyDecision(packet, length, PacketDirection.OUTBOUND, bridge);
+            }
+        } catch (Throwable failure) {
+            if (running) failClosed(failure);
+        }
+    }
+
+    private void pumpInbound() {
+        byte[] packet = new byte[MAX_PACKET];
+        try {
+            while (running) {
+                FileDescriptor bridge = bridgeFd;
+                ParcelFileDescriptor tun = realTun;
+                if (bridge == null || tun == null) return;
+                int length = Os.read(bridge, packet, 0, packet.length);
+                if (length <= 0) continue;
+                inboundPackets.incrementAndGet();
+                applyDecision(packet, length, PacketDirection.INBOUND, tun.getFileDescriptor());
+            }
+        } catch (Throwable failure) {
+            if (running) failClosed(failure);
+        }
+    }
+
+    private void applyDecision(byte[] packet, int length, PacketDirection direction, FileDescriptor destination) throws Exception {
+        PacketDecision decision = pipeline.evaluate(new PacketEnvelope(packet, length, direction, System.nanoTime()));
+        switch (decision) {
+            case PASS -> writePacket(destination, packet, length);
+            case DROP -> droppedPackets.incrementAndGet();
+            default -> throw new IllegalStateException("Decision " + decision + " requires the Build 2 scheduler");
+        }
+    }
+
+    private static void writePacket(FileDescriptor destination, byte[] packet, int length) throws Exception {
+        int written = Os.write(destination, packet, 0, length);
+        if (written != length) throw new IOException("Short packet write: " + written + "/" + length);
+    }
+
+    /** Keep Android's TUN alive on an internal failure so traffic fails closed. */
+    private synchronized void failClosed(Throwable ignored) {
+        if (!running) return;
+        running = false;
+        state = TransportState.FAILED;
         int current = handle;
         handle = -1;
         if (current >= 0) {
-            try { awgTurnOff(current); } finally { state = TransportState.STOPPED; }
-        } else {
-            state = TransportState.STOPPED;
+            try { GreatAwgBridge.turnOff(current); } catch (Throwable ignoredToo) { }
         }
+        closeBridgeLocked();
+    }
+
+    private static void protectSocket(VpnService vpnService, int fd, String family) {
+        if (fd >= 0 && !vpnService.protect(fd)) {
+            throw new IllegalStateException("Failed to protect AWG " + family + " socket");
+        }
+    }
+
+    @Override
+    public TransportState state() { return state; }
+
+    public long outboundPackets() { return outboundPackets.get(); }
+    public long inboundPackets() { return inboundPackets.get(); }
+    public long droppedPackets() { return droppedPackets.get(); }
+
+    @Override
+    public void close() {
+        Thread out;
+        Thread in;
+        synchronized (this) {
+            running = false;
+            int current = handle;
+            handle = -1;
+            if (current >= 0) {
+                try { GreatAwgBridge.turnOff(current); } catch (Throwable ignored) { }
+            }
+            closeBridgeLocked();
+            closeTunLocked();
+            out = outboundThread;
+            in = inboundThread;
+            outboundThread = null;
+            inboundThread = null;
+        }
+
+        join(out);
+        join(in);
+        state = TransportState.STOPPED;
+    }
+
+    private void closeBridgeLocked() {
+        FileDescriptor bridge = bridgeFd;
+        bridgeFd = null;
+        if (bridge != null) {
+            try { Os.shutdown(bridge, OsConstants.SHUT_RDWR); } catch (Exception ignored) { }
+            try { Os.close(bridge); } catch (Exception ignored) { }
+        }
+    }
+
+    private void closeTunLocked() {
+        ParcelFileDescriptor tun = realTun;
+        realTun = null;
+        if (tun != null) {
+            try { tun.close(); } catch (Exception ignored) { }
+        }
+    }
+
+    private static void join(Thread worker) {
+        if (worker == null || worker == Thread.currentThread()) return;
+        try { worker.join(1000); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); }
     }
 
     private static String required(String value, String name) {
@@ -151,7 +292,7 @@ public final class AwgTransport implements TunnelTransport {
 
     private static String[] splitCsv(String value) {
         String[] raw = value.split(",");
-        java.util.ArrayList<String> clean = new java.util.ArrayList<>(raw.length);
+        ArrayList<String> clean = new ArrayList<>(raw.length);
         for (String item : raw) {
             String trimmed = item.trim();
             if (!trimmed.isEmpty()) clean.add(trimmed);
