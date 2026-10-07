@@ -1,0 +1,7 @@
+<resources>
+    <color name="great_bg">#0C0E14</color>
+    <color name="great_surface">#151822</color>
+    <color name="great_text">#F2F3FA</color>
+    <color name="great_muted">#A2AABC</color>
+    <color name="great_accent">#B89AFF</color>
+</resources>

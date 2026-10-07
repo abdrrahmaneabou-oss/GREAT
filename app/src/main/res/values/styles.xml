@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.Great" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">@color/great_bg</item>
+        <item name="android:navigationBarColor">@color/great_bg</item>
+        <item name="android:windowBackground">@color/great_bg</item>
+        <item name="android:colorAccent">@color/great_accent</item>
+    </style>
+</resources>
