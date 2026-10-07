@@ -1,23 +1,33 @@
 # GREAT
 
-Clean-room Android packet-control engine, designed from the final behavior backward rather than inherited from FOX.
+Clean-room Android packet-control engine designed from final behavior backward rather than inherited from FOX.
 
-This repository intentionally starts small. Build 1 establishes one packet path, secure AmneziaWG `.conf` import and a transport boundary. The three capabilities are not copied from FOX; they will be implemented as independent policies in Build 2.
+GREAT keeps one live packet spine and one source of truth for capability state. FOX is used only as a behavioral reference; no FOX source, DEX, native library, resource or compatibility shim is reused.
 
 ## Current status
 
-Implemented in this bootstrap:
-- Minimal native Android UI with `Import .conf`.
-- Strict, extension-preserving AmneziaWG config parser.
-- AES-GCM encrypted config store backed by Android Keystore.
-- VPN service lifecycle boundary.
-- `TunnelTransport` abstraction and an explicit AmneziaWG adapter seam.
-- Pure PASS-only packet pipeline and single capability state store.
-- Unit tests for parser behavior and Build 1 pipeline invariants.
+Working and verified on-device:
+- Secure AmneziaWG `.conf` import and AES-GCM storage backed by Android Keystore.
+- Official AmneziaWG userspace engine integration.
+- Android VPN/TUN lifecycle.
+- Live packet path: `Android TUN -> GREAT PacketPipeline -> local packet bridge -> AmneziaWG -> network`.
+- arm64-v8a-only build for a substantially smaller APK.
 
-Not yet wired:
-- Official AmneziaWG native/userspace backend. This is deliberately not copied from the old FOX APK.
-- Real TUN forwarding; Build 1 is not complete until the official backend is connected and tested on-device.
-- Freeze/Ghost/Teleport; scheduled for Build 2.
+Build 2A foundation now adds:
+- Minimal IPv4/IPv6 packet parser with TCP/UDP/ICMP metadata.
+- Protocol classifier and immutable `PacketContext`.
+- Shared capability policy engine.
+- Bounded shared packet scheduler.
+- Lock-free diagnostics counters without packet-content logging.
+- Generic configurable packet selectors with no hard-coded application assumptions.
+- Ghost selective-policy implementation behind that selector boundary.
+- Floating Freeze / Ghost / Teleport control overlay foundation.
+- Deterministic parser, policy and scheduler tests.
+
+## Next
+
+Build 2B will define the exact live targeting semantics explicitly, then complete Freeze hold/release, Ghost live selection and Teleport capture/transition/replay on the same packet spine and scheduler.
+
+Build 3 is production hardening and final UI/performance work. Build 4 remains bugfix-only.
 
 See `docs/ARCHITECTURE.md` and `docs/ROADMAP.md`.
