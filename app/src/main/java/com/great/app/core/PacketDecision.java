@@ -1,10 +1,11 @@
 package com.great.app.core;
 
-/** The complete decision vocabulary for the packet engine. Build 1 uses PASS only. */
+/** Complete decision vocabulary shared by all GREAT capabilities. */
 public enum PacketDecision {
     PASS,
     DROP,
     HOLD,
     DELAY,
+    RELEASE,
     REPLAY
 }
