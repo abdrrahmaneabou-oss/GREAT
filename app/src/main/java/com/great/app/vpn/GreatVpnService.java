@@ -6,6 +6,7 @@ import android.os.IBinder;
 
 import com.great.app.config.AwgConfig;
 import com.great.app.config.AwgConfigParser;
+import com.great.app.config.CapabilitySettingsStore;
 import com.great.app.config.SecureConfigStore;
 import com.great.app.core.GreatEngine;
 import com.great.app.transport.AwgTransport;
@@ -36,9 +37,14 @@ public final class GreatVpnService extends VpnService {
         try {
             GreatEngine engine = GreatEngine.instance();
             engine.reset();
+
+            CapabilitySettingsStore tuning = new CapabilitySettingsStore(this);
+            engine.foxCapabilities().setFreezeDurationSeconds(tuning.freezeSeconds());
+            engine.foxCapabilities().setTeleportDurationSeconds(tuning.teleportSeconds());
+
             raw = new SecureConfigStore(this).load();
             AwgConfig config = new AwgConfigParser().parse(raw);
-            TunnelTransport next = new AwgTransport(engine.pipeline());
+            TunnelTransport next = new AwgTransport(engine.pipeline(), engine.foxCapabilities());
             next.start(this, config, raw);
             transport = next;
         } catch (Exception e) {
