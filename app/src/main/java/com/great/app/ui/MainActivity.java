@@ -14,12 +14,15 @@ import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import com.great.app.config.AwgConfigParser;
+import com.great.app.config.CapabilitySettingsStore;
 import com.great.app.config.SecureConfigStore;
 import com.great.app.core.EngineDiagnostics;
+import com.great.app.core.FoxCapabilityCore;
 import com.great.app.core.GreatEngine;
 import com.great.app.vpn.GreatVpnService;
 
@@ -31,7 +34,8 @@ import java.util.Arrays;
 public final class MainActivity extends Activity {
     private static final int PICK_CONFIG = 1001;
     private static final int VPN_PERMISSION = 1002;
-    private static final int BG = 0xff0c0e14, SURFACE = 0xff151822, TEXT = 0xfff2f3fa, MUTED = 0xffa2aabc, ACCENT = 0xffb89aff;
+    private static final int BG = 0xff0c0e14, SURFACE = 0xff151822, TEXT = 0xfff2f3fa,
+            MUTED = 0xffa2aabc, ACCENT = 0xffb89aff;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable statsTick = new Runnable() {
@@ -44,10 +48,15 @@ public final class MainActivity extends Activity {
     private TextView configState;
     private TextView start;
     private TextView stats;
+    private TextView freezeDuration;
+    private TextView teleportDuration;
     private boolean overlayPending;
+    private CapabilitySettingsStore tuningStore;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        tuningStore = new CapabilitySettingsStore(this);
+        applySavedTuning();
         setContentView(content());
         refresh();
         handler.post(statsTick);
@@ -99,6 +108,17 @@ public final class MainActivity extends Activity {
         add(card, controls, 10);
         add(root, card, 26);
 
+        LinearLayout tuningCard = column();
+        tuningCard.setPadding(dp(18), dp(18), dp(18), dp(18));
+        tuningCard.setBackground(round(SURFACE, 20));
+        add(tuningCard, text("AUTO RELEASE", 11, ACCENT, true), 0);
+        add(tuningCard, text("Freeze and Teleport release automatically at the selected limit. Turning them off releases earlier.",
+                12, MUTED, false), 10);
+        freezeDuration = durationRow(tuningCard, "Freeze", true);
+        teleportDuration = durationRow(tuningCard, "Teleport", false);
+        refreshDurations();
+        add(root, tuningCard, 14);
+
         LinearLayout diagnosticCard = column();
         diagnosticCard.setPadding(dp(18), dp(18), dp(18), dp(18));
         diagnosticCard.setBackground(round(SURFACE, 20));
@@ -107,8 +127,70 @@ public final class MainActivity extends Activity {
         add(diagnosticCard, stats, 12);
         add(root, diagnosticCard, 14);
 
-        add(root, text("Build 2A • parser + classifier + scheduler + overlay foundation", 12, MUTED, false), 18);
-        return root;
+        add(root, text("Build 2B • FOX capability core transplant + timed release + movable overlay",
+                12, MUTED, false), 18);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.addView(root, new ScrollView.LayoutParams(-1, -2));
+        return scroll;
+    }
+
+    private TextView durationRow(LinearLayout parent, String label, boolean freeze) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView title = text(label, 14, TEXT, true);
+        LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, -2, 1f);
+        row.addView(title, titleLp);
+
+        TextView minus = smallButton("−");
+        TextView value = text("5 s", 15, TEXT, true);
+        value.setGravity(Gravity.CENTER);
+        value.setMinWidth(dp(58));
+        TextView plus = smallButton("+");
+
+        minus.setOnClickListener(v -> adjustDuration(freeze, -1));
+        plus.setOnClickListener(v -> adjustDuration(freeze, 1));
+
+        row.addView(minus, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        row.addView(value, new LinearLayout.LayoutParams(dp(64), dp(42)));
+        row.addView(plus, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        add(parent, row, 14);
+        return value;
+    }
+
+    private TextView smallButton(String label) {
+        TextView v = text(label, 20, TEXT, true);
+        v.setGravity(Gravity.CENTER);
+        v.setBackground(round(0xff202431, 12));
+        v.setClickable(true);
+        v.setFocusable(true);
+        return v;
+    }
+
+    private void adjustDuration(boolean freeze, int delta) {
+        GreatEngine engine = GreatEngine.instance();
+        if (freeze) {
+            int value = tuningStore.setFreezeSeconds(tuningStore.freezeSeconds() + delta);
+            engine.foxCapabilities().setFreezeDurationSeconds(value);
+        } else {
+            int value = tuningStore.setTeleportSeconds(tuningStore.teleportSeconds() + delta);
+            engine.foxCapabilities().setTeleportDurationSeconds(value);
+        }
+        refreshDurations();
+    }
+
+    private void applySavedTuning() {
+        GreatEngine engine = GreatEngine.instance();
+        engine.foxCapabilities().setFreezeDurationSeconds(tuningStore.freezeSeconds());
+        engine.foxCapabilities().setTeleportDurationSeconds(tuningStore.teleportSeconds());
+    }
+
+    private void refreshDurations() {
+        if (freezeDuration != null) freezeDuration.setText(tuningStore.freezeSeconds() + " s");
+        if (teleportDuration != null) teleportDuration.setText(tuningStore.teleportSeconds() + " s");
     }
 
     private void chooseConfig() {
@@ -192,13 +274,14 @@ public final class MainActivity extends Activity {
         if (stats == null) return;
         GreatEngine engine = GreatEngine.instance();
         EngineDiagnostics.Snapshot s = engine.diagnostics().snapshot();
-        int queue = engine.scheduler().size();
+        FoxCapabilityCore fox = engine.foxCapabilities();
         String capabilities = engine.capabilities().snapshot().enabledCapabilities().toString();
         stats.setText("OUT " + s.outbound() + "   IN " + s.inbound() +
-                "\nPASS " + s.passed() + "   DROP " + s.dropped() +
-                "   BAD " + s.malformed() +
-                "\nQUEUE " + queue + "/" + engine.scheduler().capacity() +
-                "   ACTIVE " + capabilities);
+                "\nPASS " + s.passed() + "   DROP " + s.dropped() + "   HOLD " + s.held() +
+                "\nRELEASE " + s.released() + "   REPLAY " + s.replayed() + "   BAD " + s.malformed() +
+                "\nFREEZE Q " + fox.freezeQueueSize() + "   TELE Q " + fox.teleportQueueSize() +
+                (fox.teleportReplayActive() ? "   REPLAYING" : "") +
+                "\nACTIVE " + capabilities);
     }
 
     private static byte[] readBounded(InputStream input, int max) throws Exception {
