@@ -64,7 +64,7 @@ public final class MainActivity extends Activity {
         add(card, start, 10);
         add(root, card, 26);
 
-        TextView note = text("Build 1 • clean-room foundation", 12, MUTED, false);
+        TextView note = text("Build 1 • official AmneziaWG transport", 12, MUTED, false);
         add(root, note, 18);
         return root;
     }
@@ -88,7 +88,7 @@ public final class MainActivity extends Activity {
     private void startGreat() {
         Intent service = new Intent(this, GreatVpnService.class).setAction(GreatVpnService.ACTION_START);
         startService(service);
-        toast("Build 1 transport boundary is ready; official AWG backend is the next wiring step");
+        toast("Starting GREAT with the official AmneziaWG engine…");
     }
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {

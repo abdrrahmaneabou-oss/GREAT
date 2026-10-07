@@ -10,8 +10,8 @@ android {
         applicationId = "com.great.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0-build1"
+        versionCode = 2
+        versionName = "0.1.1-build1-awg"
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
     }
 
@@ -33,5 +33,6 @@ android {
 }
 
 dependencies {
+    implementation(project(":awgTunnel"))
     testImplementation("junit:junit:4.13.2")
 }
