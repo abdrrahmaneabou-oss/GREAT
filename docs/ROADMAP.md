@@ -5,16 +5,32 @@
 - Secure `.conf` import and storage.
 - Official AmneziaWG transport adapter boundary.
 - VPN lifecycle boundary.
-- Pure packet pipeline with PASS-only policy.
+- Live GREAT packet spine between Android TUN and AmneziaWG.
 - Capability state store and tests.
 
-### Exit criteria
-Build 1 is complete only after the official AmneziaWG backend is wired and real-device traffic passes through the pipeline without modification, leaks or recursion.
+### Status
+Completed and verified on-device: VPN connectivity works through `TUN -> GREAT -> AmneziaWG`.
 
 ## Build 2 — Capabilities
-- Freeze, Ghost and Teleport expressed as policies/state machines.
-- Shared queue/scheduler only where a capability actually needs it.
-- Overlay sends intents to `CapabilityController`; it never edits packets.
+
+### Build 2A — capability foundation
+- Minimal IPv4/IPv6 parser.
+- Protocol classifier.
+- Shared `PacketContext` and policy boundary.
+- Lock-free diagnostics counters.
+- Bounded shared scheduler.
+- Generic selector boundary with no hard-coded application assumptions.
+- Ghost selective-policy implementation behind that selector.
+- Floating capability-control overlay foundation.
+- Deterministic parser, policy and scheduler tests.
+
+### Build 2B — complete capability behavior
+- Final targeting semantics supplied explicitly rather than inferred.
+- Freeze state machine and controlled hold/release.
+- Ghost live selector wiring.
+- Teleport capture/transition/replay state machine.
+- Shared scheduler integration for every retained packet.
+- Queue limits, cancellation and shutdown behavior.
 - Deterministic tests for every state transition.
 
 ## Build 3 — Production
