@@ -7,6 +7,7 @@ import android.system.Os;
 import android.system.OsConstants;
 
 import com.great.app.config.AwgConfig;
+import com.great.app.core.FoxCapabilityCore;
 import com.great.app.core.PacketDecision;
 import com.great.app.core.PacketDirection;
 import com.great.app.core.PacketEnvelope;
@@ -28,8 +29,9 @@ import static org.amnezia.awg.GoBackend.awgVersion;
  * GREAT transport adapter.
  *
  * Android's real TUN terminates here first. Packets are evaluated by GREAT's
- * PacketPipeline and, only after a PASS decision, are forwarded over a packet
- * preserving AF_UNIX bridge to the official AmneziaWG Go engine.
+ * PacketPipeline and then forwarded over a packet-preserving AF_UNIX bridge to
+ * the official AmneziaWG Go engine. Capability-held packets are released back
+ * through this same transport seam, never through a legacy FOX socket stack.
  */
 public final class AwgTransport implements TunnelTransport {
     private static final String SESSION = "GREAT";
@@ -37,6 +39,10 @@ public final class AwgTransport implements TunnelTransport {
     private static final int MAX_PACKET = 65535;
 
     private final PacketPipeline pipeline;
+    private final FoxCapabilityCore capabilities;
+    private final FoxCapabilityCore.OutputSink capabilitySink = this::emitCapabilityPacket;
+    private final Object bridgeWriteLock = new Object();
+    private final Object tunWriteLock = new Object();
     private final AtomicLong outboundPackets = new AtomicLong();
     private final AtomicLong inboundPackets = new AtomicLong();
     private final AtomicLong droppedPackets = new AtomicLong();
@@ -49,8 +55,9 @@ public final class AwgTransport implements TunnelTransport {
     private Thread outboundThread;
     private Thread inboundThread;
 
-    public AwgTransport(PacketPipeline pipeline) {
+    public AwgTransport(PacketPipeline pipeline, FoxCapabilityCore capabilities) {
         this.pipeline = Objects.requireNonNull(pipeline, "pipeline");
+        this.capabilities = Objects.requireNonNull(capabilities, "capabilities");
     }
 
     @Override
@@ -62,7 +69,7 @@ public final class AwgTransport implements TunnelTransport {
         try {
             Config officialConfig = Config.parse(new ByteArrayInputStream(rawConfig));
             SharedLibraryLoader.loadSharedLibrary(vpnService, "wg-go");
-            awgVersion(); // Resolve the official native library before claiming the VPN.
+            awgVersion();
 
             final int mtu = parseMtu(config.interfaceValue("MTU"));
             VpnService.Builder builder = vpnService.new Builder()
@@ -107,10 +114,12 @@ public final class AwgTransport implements TunnelTransport {
 
             handle = startedHandle;
             running = true;
+            capabilities.attach(capabilitySink);
             state = TransportState.CONNECTED;
             startPumps();
         } catch (Throwable failure) {
             running = false;
+            capabilities.detach(capabilitySink);
             if (startedHandle >= 0) {
                 try { GreatAwgBridge.turnOff(startedHandle); } catch (Throwable ignored) { }
             }
@@ -164,24 +173,45 @@ public final class AwgTransport implements TunnelTransport {
         }
     }
 
-    private void applyDecision(byte[] packet, int length, PacketDirection direction, FileDescriptor destination) throws Exception {
-        PacketDecision decision = pipeline.evaluate(new PacketEnvelope(packet, length, direction, System.nanoTime()));
+    private void applyDecision(byte[] packet, int length, PacketDirection direction,
+                               FileDescriptor destination) throws Exception {
+        PacketDecision decision = pipeline.evaluate(
+                new PacketEnvelope(packet, length, direction, System.nanoTime()));
         switch (decision) {
-            case PASS -> writePacket(destination, packet, length);
+            case PASS -> writeDirected(direction, destination, packet, length);
             case DROP -> droppedPackets.incrementAndGet();
-            default -> throw new IllegalStateException("Decision " + decision + " requires the Build 2 scheduler");
+            case HOLD -> { /* Core owns an immutable copy until release. */ }
+            default -> throw new IllegalStateException("Unsupported live decision: " + decision);
         }
     }
 
-    private static void writePacket(FileDescriptor destination, byte[] packet, int length) throws Exception {
-        int written = Os.write(destination, packet, 0, length);
-        if (written != length) throw new IOException("Short packet write: " + written + "/" + length);
+    private void emitCapabilityPacket(PacketEnvelope packet) throws Exception {
+        if (!running) throw new IOException("Transport is not running");
+        if (packet.direction() == PacketDirection.OUTBOUND) {
+            FileDescriptor bridge = bridgeFd;
+            if (bridge == null) throw new IOException("AWG bridge is closed");
+            writeDirected(PacketDirection.OUTBOUND, bridge, packet.data(), packet.length());
+        } else {
+            ParcelFileDescriptor tun = realTun;
+            if (tun == null) throw new IOException("TUN is closed");
+            writeDirected(PacketDirection.INBOUND, tun.getFileDescriptor(), packet.data(), packet.length());
+        }
+    }
+
+    private void writeDirected(PacketDirection direction, FileDescriptor destination,
+                               byte[] packet, int length) throws Exception {
+        Object lock = direction == PacketDirection.OUTBOUND ? bridgeWriteLock : tunWriteLock;
+        synchronized (lock) {
+            int written = Os.write(destination, packet, 0, length);
+            if (written != length) throw new IOException("Short packet write: " + written + "/" + length);
+        }
     }
 
     /** Keep Android's TUN alive on an internal failure so traffic fails closed. */
     private synchronized void failClosed(Throwable ignored) {
         if (!running) return;
         running = false;
+        capabilities.detach(capabilitySink);
         state = TransportState.FAILED;
         int current = handle;
         handle = -1;
@@ -197,8 +227,7 @@ public final class AwgTransport implements TunnelTransport {
         }
     }
 
-    @Override
-    public TransportState state() { return state; }
+    @Override public TransportState state() { return state; }
 
     public long outboundPackets() { return outboundPackets.get(); }
     public long inboundPackets() { return inboundPackets.get(); }
@@ -210,6 +239,7 @@ public final class AwgTransport implements TunnelTransport {
         Thread in;
         synchronized (this) {
             running = false;
+            capabilities.detach(capabilitySink);
             int current = handle;
             handle = -1;
             if (current >= 0) {
@@ -312,12 +342,16 @@ public final class AwgTransport implements TunnelTransport {
 
         static Cidr parse(String value) {
             int slash = value.lastIndexOf('/');
-            if (slash <= 0 || slash == value.length() - 1) throw new IllegalArgumentException("Invalid CIDR: " + value);
+            if (slash <= 0 || slash == value.length() - 1) {
+                throw new IllegalArgumentException("Invalid CIDR: " + value);
+            }
             String address = value.substring(0, slash).trim();
             int prefix = Integer.parseInt(value.substring(slash + 1).trim());
             boolean ipv6 = address.indexOf(':') >= 0;
             int max = ipv6 ? 128 : 32;
-            if (prefix < 0 || prefix > max) throw new IllegalArgumentException("Invalid CIDR prefix: " + value);
+            if (prefix < 0 || prefix > max) {
+                throw new IllegalArgumentException("Invalid CIDR prefix: " + value);
+            }
             return new Cidr(address, prefix);
         }
     }
