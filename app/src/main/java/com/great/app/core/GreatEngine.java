@@ -1,6 +1,6 @@
 package com.great.app.core;
 
-/** Process-wide owner of GREAT's packet decision state and shared capability infrastructure. */
+/** Process-wide owner of GREAT's packet decision state and capability infrastructure. */
 public final class GreatEngine {
     private static final GreatEngine INSTANCE = new GreatEngine();
     private static final int SCHEDULER_CAPACITY = 512;
@@ -8,9 +8,10 @@ public final class GreatEngine {
     private final CapabilityController capabilities = new CapabilityController();
     private final EngineDiagnostics diagnostics = new EngineDiagnostics();
     private final PacketScheduler scheduler = new PacketScheduler(SCHEDULER_CAPACITY);
-    private final ConfigurablePacketSelector ghostSelector = new ConfigurablePacketSelector();
+    private final ConfigurablePacketSelector targetSelector = new ConfigurablePacketSelector();
+    private final FoxCapabilityCore foxCapabilities = new FoxCapabilityCore(capabilities, diagnostics);
     private final PacketPolicy policy = new CapabilityPolicyEngine(
-            new GhostPolicy(ghostSelector),
+            new FoxCapabilityPolicy(targetSelector, foxCapabilities),
             new PassPolicy());
     private final PacketPipeline pipeline = new PacketPipeline(
             policy,
@@ -19,19 +20,28 @@ public final class GreatEngine {
             new DefaultPacketClassifier(),
             diagnostics);
 
-    private GreatEngine() {}
+    private GreatEngine() {
+        capabilities.setListener(foxCapabilities::onCapabilityChanged);
+    }
 
     public static GreatEngine instance() { return INSTANCE; }
     public CapabilityController capabilities() { return capabilities; }
     public PacketPipeline pipeline() { return pipeline; }
     public PacketScheduler scheduler() { return scheduler; }
     public EngineDiagnostics diagnostics() { return diagnostics; }
-    public ConfigurablePacketSelector ghostSelector() { return ghostSelector; }
+    public FoxCapabilityCore foxCapabilities() { return foxCapabilities; }
+
+    /** Shared target gate for all three capabilities. It intentionally defaults to match-nothing. */
+    public ConfigurablePacketSelector targetSelector() { return targetSelector; }
+
+    /** Compatibility accessor retained for Build 2A callers; now aliases the shared target gate. */
+    public ConfigurablePacketSelector ghostSelector() { return targetSelector; }
 
     public void reset() {
+        foxCapabilities.reset();
         capabilities.reset();
         scheduler.clear();
         diagnostics.reset();
-        ghostSelector.clear();
+        targetSelector.clear();
     }
 }
