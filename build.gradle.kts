@@ -11,6 +11,9 @@ project(":awgTunnel") {
             ndkVersion = "26.1.10909125"
             defaultConfig {
                 minSdk = 29
+                ndk {
+                    abiFilters += listOf("arm64-v8a")
+                }
             }
         }
     }
