@@ -13,6 +13,9 @@ android {
         versionCode = 2
         versionName = "0.1.1-build1-awg"
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
     }
 
     buildTypes {
