@@ -1,5 +1,6 @@
 package com.great.app.ui;
 
+import android.app.Activity;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -102,9 +103,9 @@ public final class FreezeMonitorService extends Service {
         }
 
         if (ACTION_START.equals(action)) {
-            int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, RESULT_CANCELED);
+            int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED);
             Intent resultData = parcelableIntent(intent, EXTRA_RESULT_DATA);
-            if (resultCode != RESULT_OK || resultData == null) {
+            if (resultCode != Activity.RESULT_OK || resultData == null) {
                 setNotReady("Screen capture permission required");
                 stopSelf();
                 return START_NOT_STICKY;
@@ -303,7 +304,7 @@ public final class FreezeMonitorService extends Service {
         if (monitorView == null || overlayParams == null) return;
         overlayParams.flags = edit ? editFlags() : lockedFlags();
         try { windowManager.updateViewLayout(monitorView, overlayParams); } catch (Throwable ignored) { }
-        setVisual(edit ? COLOR_WAITING : COLOR_WAITING, edit ? "Edit monitor position" : "Waiting for white");
+        setVisual(COLOR_WAITING, edit ? "Edit monitor position" : "Waiting for white");
     }
 
     private boolean onMonitorTouch(View view, MotionEvent event) {
@@ -351,6 +352,10 @@ public final class FreezeMonitorService extends Service {
         float dpi = (dm.xdpi + dm.ydpi) / 2f;
         if (!Float.isFinite(dpi) || dpi < 100f || dpi > 1000f) dpi = dm.densityDpi;
         return Math.max(1f, PixelTriggerMonitorEngine.SENSOR_DIAMETER_MM * dpi / 25.4f);
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
     private Point screenSize() {
@@ -483,8 +488,7 @@ public final class FreezeMonitorService extends Service {
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             stroke.setColor(monitorColor);
-            float diameter = sensorDiameterPx();
-            float radius = Math.max(0.5f, diameter / 2f);
+            float radius = Math.max(0.5f, sensorDiameterPx() / 2f);
             canvas.drawCircle(getWidth() / 2f, getHeight() / 2f, radius, stroke);
         }
     }
