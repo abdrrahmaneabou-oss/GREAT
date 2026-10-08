@@ -48,6 +48,7 @@ public final class CapabilityOverlayService extends Service {
     private final Runnable renderTick = new Runnable() {
         @Override public void run() {
             renderAll();
+            renderCircleToggle();
             if (root != null) handler.postDelayed(this, 250);
         }
     };
@@ -59,6 +60,7 @@ public final class CapabilityOverlayService extends Service {
     private TriggerSettingsStore triggerSettings;
     private LinearLayout circleMenu;
     private TextView circleSizeLabel;
+    private TextView circleToggle;
 
     @Override public void onCreate() {
         super.onCreate();
@@ -120,7 +122,10 @@ public final class CapabilityOverlayService extends Service {
         circle.setOnClickListener(v -> {
             boolean open = circleMenu.getVisibility() == View.VISIBLE;
             circleMenu.setVisibility(open ? View.GONE : View.VISIBLE);
-            if (!open) updateCircleSizeLabel();
+            if (!open) {
+                updateCircleSizeLabel();
+                renderCircleToggle();
+            }
             root.post(this::clampAndUpdate);
         });
         add(root, circle, 6);
@@ -131,11 +136,24 @@ public final class CapabilityOverlayService extends Service {
         circleMenu.setBackground(round(0xff1b1f2a, 12));
         circleMenu.setVisibility(View.GONE);
 
+        circleToggle = smallAction("");
+        circleToggle.setOnClickListener(v -> {
+            boolean next = !triggerSettings.enabled();
+            triggerSettings.setEnabled(next);
+            renderCircleToggle();
+            sendTriggerAction(next
+                    ? FreezeTriggerOverlayService.ACTION_SHOW
+                    : FreezeTriggerOverlayService.ACTION_REFRESH);
+            Toast.makeText(this, next ? "Circle enabled" : "Circle disabled", Toast.LENGTH_SHORT).show();
+        });
+        renderCircleToggle();
+        add(circleMenu, circleToggle, 0);
+
         circleSizeLabel = new TextView(this);
         circleSizeLabel.setTextSize(12);
         circleSizeLabel.setTextColor(TEXT);
         updateCircleSizeLabel();
-        add(circleMenu, circleSizeLabel, 0);
+        add(circleMenu, circleSizeLabel, 6);
 
         SeekBar size = new SeekBar(this);
         int steps = Math.round((TriggerSettingsStore.MAX_DIAMETER_CM - TriggerSettingsStore.MIN_DIAMETER_CM)
@@ -173,6 +191,14 @@ public final class CapabilityOverlayService extends Service {
         add(circleMenu, save, 6);
 
         add(root, circleMenu, 6);
+    }
+
+    private void renderCircleToggle() {
+        if (circleToggle == null) return;
+        boolean enabled = triggerSettings.enabled();
+        circleToggle.setText(enabled ? "CIRCLE  ON" : "CIRCLE  OFF");
+        circleToggle.setTextColor(enabled ? Color.BLACK : TEXT);
+        circleToggle.setBackground(round(enabled ? ACTIVE : INACTIVE, 12));
     }
 
     private void sendTriggerAction(String action) {
@@ -327,6 +353,7 @@ public final class CapabilityOverlayService extends Service {
         overlayParams = null;
         circleMenu = null;
         circleSizeLabel = null;
+        circleToggle = null;
     }
 
     @Override public void onDestroy() {
