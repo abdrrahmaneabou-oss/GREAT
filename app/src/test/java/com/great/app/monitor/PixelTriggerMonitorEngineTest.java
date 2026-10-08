@@ -46,6 +46,15 @@ public final class PixelTriggerMonitorEngineTest {
         assertEquals(List.of(PixelTriggerMonitorEngine.State.ARMED), states);
     }
 
+    @Test public void missingWhiteImmediatelyEntersFiredState() {
+        List<PixelTriggerMonitorEngine.State> states = new ArrayList<>();
+        PixelTriggerMonitorEngine engine = new PixelTriggerMonitorEngine(states::add);
+        PixelTriggerMonitorEngine.Sample dark = sample(0x101010, 0x101010, 0x101010, 0x101010, 0x101010);
+        engine.process(dark);
+        assertEquals(PixelTriggerMonitorEngine.State.FIRED, engine.state());
+        assertEquals(List.of(PixelTriggerMonitorEngine.State.FIRED), states);
+    }
+
     @Test public void fireRequiresProbeDepartureAndDarkAverageLuminance() {
         PixelTriggerMonitorEngine engine = new PixelTriggerMonitorEngine(null);
         PixelTriggerMonitorEngine.Sample white = sample(0xffffff, 0xffffff, 0xffffff, 0xffffff, 0xffffff);
@@ -73,15 +82,16 @@ public final class PixelTriggerMonitorEngineTest {
         assertEquals(PixelTriggerMonitorEngine.State.ARMED, engine.state());
     }
 
-    @Test public void oneBadFrameBreaksArmingStreak() {
+    @Test public void whiteAfterInitialFiredStateRearmsAfterThreeFrames() {
         PixelTriggerMonitorEngine engine = new PixelTriggerMonitorEngine(null);
         PixelTriggerMonitorEngine.Sample white = sample(0xffffff, 0xffffff, 0xffffff, 0xffffff, 0xffffff);
         PixelTriggerMonitorEngine.Sample dark = sample(0x101010, 0x101010, 0x101010, 0x101010, 0x101010);
-        engine.process(white);
-        engine.process(white);
         engine.process(dark);
+        assertEquals(PixelTriggerMonitorEngine.State.FIRED, engine.state());
         engine.process(white);
         engine.process(white);
-        assertEquals(PixelTriggerMonitorEngine.State.WAITING_FOR_WHITE, engine.state());
+        assertEquals(PixelTriggerMonitorEngine.State.FIRED, engine.state());
+        engine.process(white);
+        assertEquals(PixelTriggerMonitorEngine.State.ARMED, engine.state());
     }
 }
