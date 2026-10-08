@@ -17,6 +17,7 @@ import android.view.View;
 import android.view.WindowManager;
 
 import com.great.app.config.TriggerSettingsStore;
+import com.great.app.shizuku.ShizukuTouchEngine;
 
 /**
  * Visual Freeze trigger circle.
@@ -31,6 +32,8 @@ public final class FreezeTriggerOverlayService extends Service {
     public static final String ACTION_LOCK = "com.great.app.action.LOCK_FREEZE_TRIGGER";
     public static final String ACTION_HIDE = "com.great.app.action.HIDE_FREEZE_TRIGGER";
     public static final String ACTION_REFRESH = "com.great.app.action.REFRESH_FREEZE_TRIGGER";
+
+    private final ShizukuTouchEngine touchEngine = ShizukuTouchEngine.instance();
 
     private WindowManager windowManager;
     private TriggerSettingsStore settings;
@@ -62,12 +65,20 @@ public final class FreezeTriggerOverlayService extends Service {
             ensureCircle();
             refreshGeometry();
             setEditMode(false);
+            bindTouchDiagnostics();
         } else if (ACTION_REFRESH.equals(action)) {
             ensureCircle();
             refreshGeometry();
-            if (!editMode) applyLockedFlags();
+            if (!editMode) {
+                applyLockedFlags();
+                bindTouchDiagnostics();
+            }
         }
         return START_NOT_STICKY;
+    }
+
+    private void bindTouchDiagnostics() {
+        touchEngine.ensureBound(this, (ready, status) -> { });
     }
 
     private void ensureCircle() {
@@ -203,6 +214,7 @@ public final class FreezeTriggerOverlayService extends Service {
         params = null;
         editMode = false;
         dragState = null;
+        touchEngine.unbind();
     }
 
     @Override public void onDestroy() {
