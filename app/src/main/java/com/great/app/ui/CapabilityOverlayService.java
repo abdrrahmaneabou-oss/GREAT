@@ -143,7 +143,7 @@ public final class CapabilityOverlayService extends Service {
             renderCircleToggle();
             sendTriggerAction(next
                     ? FreezeTriggerOverlayService.ACTION_SHOW
-                    : FreezeTriggerOverlayService.ACTION_REFRESH);
+                    : FreezeTriggerOverlayService.ACTION_HIDE);
             Toast.makeText(this, next ? "Circle enabled" : "Circle disabled", Toast.LENGTH_SHORT).show();
         });
         renderCircleToggle();
@@ -168,7 +168,7 @@ public final class CapabilityOverlayService extends Service {
                 float value = TriggerSettingsStore.MIN_DIAMETER_CM + progress * TriggerSettingsStore.STEP_CM;
                 triggerSettings.setDiameterCm(value);
                 updateCircleSizeLabel();
-                sendTriggerAction(FreezeTriggerOverlayService.ACTION_REFRESH);
+                if (triggerSettings.enabled()) sendTriggerAction(FreezeTriggerOverlayService.ACTION_REFRESH);
             }
             @Override public void onStartTrackingTouch(SeekBar seekBar) { }
             @Override public void onStopTrackingTouch(SeekBar seekBar) { }
@@ -183,7 +183,9 @@ public final class CapabilityOverlayService extends Service {
         save.setTextColor(Color.BLACK);
         save.setBackground(round(ACTIVE, 12));
         save.setOnClickListener(v -> {
-            sendTriggerAction(FreezeTriggerOverlayService.ACTION_LOCK);
+            sendTriggerAction(triggerSettings.enabled()
+                    ? FreezeTriggerOverlayService.ACTION_LOCK
+                    : FreezeTriggerOverlayService.ACTION_HIDE);
             circleMenu.setVisibility(View.GONE);
             root.post(this::clampAndUpdate);
             Toast.makeText(this, "Circle saved", Toast.LENGTH_SHORT).show();
