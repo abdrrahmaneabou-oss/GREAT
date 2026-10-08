@@ -46,14 +46,19 @@ public final class FreezeMonitorService extends Service {
     public static final String ACTION_EDIT = "com.great.app.action.EDIT_FREEZE_MONITOR";
     public static final String ACTION_LOCK = "com.great.app.action.LOCK_FREEZE_MONITOR";
     public static final String ACTION_STOP = "com.great.app.action.STOP_FREEZE_MONITOR";
+    public static final String ACTION_MONITORING_ON = "com.great.app.action.FREEZE_MONITORING_ON";
+    public static final String ACTION_MONITORING_OFF = "com.great.app.action.FREEZE_MONITORING_OFF";
     public static final String EXTRA_RESULT_CODE = "projection_result_code";
     public static final String EXTRA_RESULT_DATA = "projection_result_data";
 
     private static final int NOTIFICATION_ID = 4107;
     private static final String CHANNEL_ID = "great_visual_monitor";
-    private static final int COLOR_WAITING = Color.rgb(255, 184, 77);
+    // Waiting for the first valid white baseline is visually red because white is currently absent.
+    // The PixelTrigger arming rule itself is unchanged: Freeze cannot fire until white has armed it.
+    private static final int COLOR_WAITING = Color.rgb(255, 80, 95);
     private static final int COLOR_ARMED = Color.rgb(60, 220, 120);
     private static final int COLOR_FIRED = Color.rgb(255, 80, 95);
+    private static final int COLOR_MONITORING_OFF = Color.rgb(145, 150, 160);
     private static final int COLOR_NOT_READY = Color.rgb(220, 85, 255);
 
     private static volatile boolean running;
@@ -115,6 +120,20 @@ public final class FreezeMonitorService extends Service {
             return START_STICKY;
         }
 
+        if (ACTION_MONITORING_OFF.equals(action)) {
+            if (!running) return START_NOT_STICKY;
+            settings.setMonitoringEnabled(false);
+            pauseMonitoring();
+            return START_STICKY;
+        }
+
+        if (ACTION_MONITORING_ON.equals(action)) {
+            if (!running) return START_NOT_STICKY;
+            settings.setMonitoringEnabled(true);
+            resumeMonitoring();
+            return START_STICKY;
+        }
+
         if (ACTION_EDIT.equals(action)) {
             if (!running) return START_NOT_STICKY;
             setEditMode(true);
@@ -125,7 +144,6 @@ public final class FreezeMonitorService extends Service {
             if (!running) return START_NOT_STICKY;
             settings.setEnabled(true);
             setEditMode(false);
-            resetDetector("Waiting for white");
             return START_STICKY;
         }
         return running ? START_STICKY : START_NOT_STICKY;
@@ -160,9 +178,18 @@ public final class FreezeMonitorService extends Service {
             }
         }
         ensureOverlay();
-        setEditMode(false);
         running = true;
-        resetDetector("Waiting for white");
+        editMode = false;
+        if (overlayParams != null) {
+            overlayParams.flags = lockedFlags();
+            try { windowManager.updateViewLayout(monitorView, overlayParams); } catch (Throwable ignored) { }
+        }
+        engine.reset();
+        if (settings.monitoringEnabled()) {
+            applyDetectorState(engine.state());
+        } else {
+            pauseMonitoring();
+        }
     }
 
     private void createCapture() {
@@ -188,7 +215,7 @@ public final class FreezeMonitorService extends Service {
         Image image = null;
         try {
             image = reader.acquireLatestImage();
-            if (image == null || editMode || !settings.enabled() || !running) return;
+            if (image == null || editMode || !settings.enabled() || !settings.monitoringEnabled() || !running) return;
             PixelTriggerMonitorEngine.Sample sample = sampleImage(image);
             if (sample != null) engine.process(sample);
         } catch (Throwable ignored) {
@@ -241,10 +268,15 @@ public final class FreezeMonitorService extends Service {
     }
 
     private void onDetectorState(PixelTriggerMonitorEngine.State state) {
+        if (!settings.monitoringEnabled() || editMode || !running) return;
+        applyDetectorState(state);
+    }
+
+    private void applyDetectorState(PixelTriggerMonitorEngine.State state) {
         switch (state) {
             case WAITING_FOR_WHITE -> {
                 GreatEngine.instance().freezeCore().setHoldTrigger(false);
-                setVisual(COLOR_WAITING, "Waiting for white");
+                setVisual(COLOR_WAITING, "Waiting for white • not armed");
             }
             case ARMED -> {
                 GreatEngine.instance().freezeCore().setHoldTrigger(false);
@@ -257,10 +289,26 @@ public final class FreezeMonitorService extends Service {
         }
     }
 
+    private void pauseMonitoring() {
+        GreatEngine.instance().freezeCore().setHoldTrigger(false);
+        if (monitorView != null && overlayParams != null && !editMode) {
+            overlayParams.flags = lockedFlags();
+            try { windowManager.updateViewLayout(monitorView, overlayParams); } catch (Throwable ignored) { }
+        }
+        setVisual(COLOR_MONITORING_OFF, "Monitoring OFF");
+    }
+
+    private void resumeMonitoring() {
+        if (!running) return;
+        if (editMode) setEditMode(false);
+        applyDetectorState(engine.state());
+    }
+
     private void resetDetector(String status) {
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
         engine.reset();
-        setVisual(COLOR_WAITING, status);
+        if (settings.monitoringEnabled()) setVisual(COLOR_WAITING, status);
+        else setVisual(COLOR_MONITORING_OFF, "Monitoring OFF");
     }
 
     private void setNotReady(String status) {
@@ -300,11 +348,15 @@ public final class FreezeMonitorService extends Service {
         editMode = edit;
         dragState = null;
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
-        engine.reset();
+        if (edit) engine.reset();
         if (monitorView == null || overlayParams == null) return;
         overlayParams.flags = edit ? editFlags() : lockedFlags();
         try { windowManager.updateViewLayout(monitorView, overlayParams); } catch (Throwable ignored) { }
-        setVisual(COLOR_WAITING, edit ? "Edit monitor position" : "Waiting for white");
+        if (edit) {
+            setVisual(COLOR_MONITORING_OFF, "Edit monitor position");
+        } else {
+            resetDetector("Waiting for white • not armed");
+        }
     }
 
     private boolean onMonitorTouch(View view, MotionEvent event) {
