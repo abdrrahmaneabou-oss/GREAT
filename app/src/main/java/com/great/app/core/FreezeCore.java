@@ -28,16 +28,14 @@ public final class FreezeCore implements AutoCloseable {
     private OutputSink sink;
     private ScheduledFuture<?> timeout;
     private int durationSeconds = DEFAULT_DURATION_SECONDS;
-    // "enabled" is the ordinary/manual Freeze state controlled by CapabilityController.
     private boolean enabled;
-    // holdTrigger is independent and belongs only to the passive circle trigger.
-    private boolean holdTrigger;
     private boolean closed;
     private long generation;
 
     public FreezeCore(CapabilityController controller, EngineDiagnostics diagnostics) {
         this(controller, diagnostics, new Random());
     }
+
     FreezeCore(CapabilityController controller, EngineDiagnostics diagnostics, Random rng) {
         this.controller = Objects.requireNonNull(controller);
         this.diagnostics = Objects.requireNonNull(diagnostics);
@@ -57,7 +55,8 @@ public final class FreezeCore implements AutoCloseable {
         int remotePort = m.sourcePort();
         if (remotePort >= 7000 && remotePort <= 10000) return PacketDecision.PASS;
         synchronized (lock) {
-            if (closed || !effectiveLocked() || !shouldHold(udpLength - 8)) return PacketDecision.PASS;
+            if (closed || !enabled || !state.enabled(Capability.FREEZE)
+                    || !shouldHold(udpLength - 8)) return PacketDecision.PASS;
             if (buffer.size() == CAPACITY) {
                 buffer.removeFirst();
                 diagnostics.schedulerRejected();
@@ -70,7 +69,6 @@ public final class FreezeCore implements AutoCloseable {
         }
     }
 
-    // Strict inequalities; a new pair of thresholds is sampled for each packet.
     boolean shouldHold(int payloadLength) {
         int lower = 20 + rng.nextInt(10);
         int upper = 450 + rng.nextInt(50);
@@ -82,66 +80,34 @@ public final class FreezeCore implements AutoCloseable {
         if (capability != Capability.FREEZE) return;
         synchronized (lock) {
             if (closed) return;
-            boolean wasEffective = effectiveLocked();
             enabled = value;
-
             if (timeout != null) timeout.cancel(false);
             timeout = null;
             if (value) {
-                // Manual Freeze keeps its own auto-release timer. The circle trigger does not
-                // cancel or own this timer; if the timer expires while a finger is held, the
-                // trigger remains effective until that finger is released.
+                buffer.clear();
                 long activation = controller.snapshot().revision();
                 timeout = timers.schedule(() -> controller.setIfRevision(
                         Capability.FREEZE, false, activation), durationSeconds, TimeUnit.SECONDS);
-            }
-
-            boolean nowEffective = effectiveLocked();
-            if (!wasEffective && nowEffective) {
+            } else if (!buffer.isEmpty()) {
+                ArrayList<PacketEnvelope> all = new ArrayList<>(buffer);
                 buffer.clear();
-            } else if (wasEffective && !nowEffective) {
-                releaseBufferedLocked();
+                long session = generation;
+                releases.execute(() -> release(all, session));
             }
         }
     }
 
     /**
-     * Circle hold state. This never toggles CapabilityController, so manual Freeze remains fully
-     * independent. DOWN inside the trigger sets this true; UP/CANCEL for that same finger sets it
-     * false. Freeze remains effective while either manual Freeze or the circle hold is active.
+     * Compatibility hook for the unfinished circle backend. It intentionally does not alter the
+     * proven manual Freeze state. Circle-driven Freeze will be re-enabled only when the passive
+     * touch source is available and tested on-device.
      */
-    public void setHoldTrigger(boolean active) {
-        synchronized (lock) {
-            if (closed || holdTrigger == active) return;
-            boolean wasEffective = effectiveLocked();
-            holdTrigger = active;
-            boolean nowEffective = effectiveLocked();
-            if (!wasEffective && nowEffective) {
-                buffer.clear();
-            } else if (wasEffective && !nowEffective) {
-                releaseBufferedLocked();
-            }
-        }
-    }
+    public void setHoldTrigger(boolean active) { }
 
-    public boolean holdTriggerActive() {
-        synchronized (lock) { return holdTrigger; }
-    }
+    public boolean holdTriggerActive() { return false; }
 
     public boolean effectiveActive() {
-        synchronized (lock) { return effectiveLocked(); }
-    }
-
-    private boolean effectiveLocked() {
-        return enabled || holdTrigger;
-    }
-
-    private void releaseBufferedLocked() {
-        if (buffer.isEmpty()) return;
-        ArrayList<PacketEnvelope> all = new ArrayList<>(buffer);
-        buffer.clear();
-        long session = generation;
-        releases.execute(() -> release(all, session));
+        synchronized (lock) { return enabled; }
     }
 
     private void release(ArrayList<PacketEnvelope> all, long session) {
@@ -151,7 +117,6 @@ public final class FreezeCore implements AutoCloseable {
                 if (closed || session != generation || sink == null) return;
                 output = sink;
             }
-            // Never hold the queue lock during a potentially blocking TUN write.
             try { output.emit(all.get(i)); diagnostics.released(); }
             catch (Exception e) { return; }
             if (i > 0 && (i & 1) == 0) {
@@ -162,31 +127,44 @@ public final class FreezeCore implements AutoCloseable {
     }
 
     public void attach(OutputSink output) { synchronized (lock) { sink = Objects.requireNonNull(output); } }
+
     public void detach(OutputSink output) {
         synchronized (lock) { if (sink == output) { sink = null; generation++; } }
     }
+
     public int freezeQueueSize() { synchronized (lock) { return buffer.size(); } }
     public int freezeDurationSeconds() { synchronized (lock) { return durationSeconds; } }
+
     public void setFreezeDurationSeconds(int seconds) {
-        if (seconds < MIN_DURATION_SECONDS || seconds > MAX_DURATION_SECONDS) throw new IllegalArgumentException("duration must be 1..10 seconds");
+        if (seconds < MIN_DURATION_SECONDS || seconds > MAX_DURATION_SECONDS) {
+            throw new IllegalArgumentException("duration must be 1..10 seconds");
+        }
         synchronized (lock) { durationSeconds = seconds; }
     }
+
     public void reset() {
         synchronized (lock) {
             enabled = false;
-            holdTrigger = false;
             generation++;
             if (timeout != null) timeout.cancel(false);
             timeout = null;
             buffer.clear();
         }
     }
+
     @Override public void close() {
         synchronized (lock) { reset(); closed = true; sink = null; }
-        timers.shutdownNow(); releases.shutdownNow();
+        timers.shutdownNow();
+        releases.shutdownNow();
     }
+
     private static Thread daemon(Runnable r, String name) {
-        Thread t = new Thread(r, name); t.setDaemon(true); return t;
+        Thread t = new Thread(r, name);
+        t.setDaemon(true);
+        return t;
     }
-    private static int u16(byte[] d, int i) { return ((d[i] & 255) << 8) | (d[i + 1] & 255); }
+
+    private static int u16(byte[] d, int i) {
+        return ((d[i] & 255) << 8) | (d[i + 1] & 255);
+    }
 }
