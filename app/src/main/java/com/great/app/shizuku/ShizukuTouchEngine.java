@@ -94,7 +94,7 @@ public final class ShizukuTouchEngine {
                     .daemon(false)
                     .processNameSuffix("great_touch")
                     .debuggable(false)
-                    .version(1);
+                    .version(2);
         }
 
         try {
