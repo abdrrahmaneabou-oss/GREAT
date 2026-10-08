@@ -10,8 +10,8 @@ android {
         applicationId = "com.great.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 6
-        versionName = "0.3.0-freeze-only"
+        versionCode = 7
+        versionName = "0.4.0-shizuku"
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
         ndk {
             abiFilters += listOf("arm64-v8a")
@@ -37,5 +37,7 @@ android {
 
 dependencies {
     implementation(project(":awgTunnel"))
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
     testImplementation("junit:junit:4.13.2")
 }
