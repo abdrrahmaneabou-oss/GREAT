@@ -15,7 +15,7 @@ public final class PixelTriggerMonitorEngineTest {
     @Test public void whiteClassifierMatchesPixelTriggerThresholds() {
         assertTrue(PixelTriggerMonitorEngine.isPackedWhite(0x00ffffff));
         assertTrue(PixelTriggerMonitorEngine.isPackedWhite(0x00d0d0d0));
-        assertFalse(PixelTriggerMonitorEngine.isPackedWhite(0x00a9ffffff));
+        assertFalse(PixelTriggerMonitorEngine.isPackedWhite(0x00a9ffff));
         assertFalse(PixelTriggerMonitorEngine.isPackedWhite(0x00ffaaaa));
         assertFalse(PixelTriggerMonitorEngine.isPackedWhite(0x00b0b0b0));
     }
