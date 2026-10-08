@@ -77,6 +77,7 @@ public final class FreezeMonitorService extends Service {
     private DragState dragState;
     private boolean shuttingDown;
     private volatile int monitorColor = COLOR_NOT_READY;
+    private Runnable freezeTimeout;
 
     public static boolean isRunning() { return running; }
     public static boolean isEditing() { return editing; }
@@ -112,7 +113,6 @@ public final class FreezeMonitorService extends Service {
                 return START_NOT_STICKY;
             }
             settings.setEnabled(true);
-            settings.setMonitoringEnabled(true);
             startMonitor(resultCode, resultData);
             return START_STICKY;
         }
@@ -158,8 +158,11 @@ public final class FreezeMonitorService extends Service {
                     @Override public void onStop() {
                         mainHandler.post(() -> {
                             if (shuttingDown) return;
-                            setNotReady("Screen capture stopped");
+                            running = false;
+                            monitoringActive = false;
+                            cancelFreezeTimeout();
                             GreatEngine.instance().freezeCore().setHoldTrigger(false);
+                            setNotReady("Screen capture stopped");
                             stopSelf();
                         });
                     }
@@ -174,9 +177,16 @@ public final class FreezeMonitorService extends Service {
         ensureOverlay();
         running = true;
         editing = false;
-        monitoringActive = true;
         lockOverlay();
-        resetDetector("Waiting for white");
+        engine.reset();
+        if (settings.monitoringEnabled()) {
+            monitoringActive = true;
+            setVisual(COLOR_WAITING, "Waiting for white");
+        } else {
+            monitoringActive = false;
+            GreatEngine.instance().freezeCore().setHoldTrigger(false);
+            setVisual(COLOR_PAUSED, "Monitoring OFF");
+        }
     }
 
     private void createCapture() {
@@ -249,22 +259,43 @@ public final class FreezeMonitorService extends Service {
         if (!running || editing || !settings.monitoringEnabled()) return;
         switch (state) {
             case WAITING_FOR_WHITE -> {
+                cancelFreezeTimeout();
                 GreatEngine.instance().freezeCore().setHoldTrigger(false);
                 setVisual(COLOR_WAITING, "Waiting for white");
             }
             case ARMED -> {
+                cancelFreezeTimeout();
                 GreatEngine.instance().freezeCore().setHoldTrigger(false);
                 setVisual(COLOR_ARMED, "ARMED • white detected • Freeze OFF");
             }
             case FIRED -> {
                 GreatEngine.instance().freezeCore().setHoldTrigger(true);
                 setVisual(COLOR_FIRED, "FIRED • white lost • Freeze ON");
+                scheduleFreezeTimeout();
             }
         }
     }
 
+    private void scheduleFreezeTimeout() {
+        cancelFreezeTimeout();
+        freezeTimeout = () -> {
+            freezeTimeout = null;
+            if (!running || editing || !settings.monitoringEnabled()) return;
+            if (engine.state() != PixelTriggerMonitorEngine.State.FIRED) return;
+            GreatEngine.instance().freezeCore().setHoldTrigger(false);
+            setVisual(COLOR_WAITING, "Freeze limit reached • waiting for white");
+        };
+        mainHandler.postDelayed(freezeTimeout, settings.maxFreezeMillis());
+    }
+
+    private void cancelFreezeTimeout() {
+        if (freezeTimeout != null) mainHandler.removeCallbacks(freezeTimeout);
+        freezeTimeout = null;
+    }
+
     private void pauseMonitoring() {
         monitoringActive = false;
+        cancelFreezeTimeout();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
         engine.reset();
         lockOverlay();
@@ -284,13 +315,14 @@ public final class FreezeMonitorService extends Service {
         monitoringActive = false;
         settings.setMonitoringEnabled(false);
         dragState = null;
+        cancelFreezeTimeout();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
         engine.reset();
         if (monitorView != null && overlayParams != null) {
             overlayParams.flags = editFlags();
             try { windowManager.updateViewLayout(monitorView, overlayParams); } catch (Throwable ignored) { }
         }
-        setVisual(COLOR_PAUSED, "Edit monitor position");
+        setVisual(COLOR_WAITING, "Edit monitor position");
     }
 
     private void leaveEditAndArm() {
@@ -302,6 +334,7 @@ public final class FreezeMonitorService extends Service {
     }
 
     private void resetDetector(String status) {
+        cancelFreezeTimeout();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
         engine.reset();
         if (settings.monitoringEnabled()) setVisual(COLOR_WAITING, status);
@@ -310,6 +343,7 @@ public final class FreezeMonitorService extends Service {
 
     private void setNotReady(String status) {
         monitoringActive = false;
+        cancelFreezeTimeout();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
         setVisual(COLOR_NOT_READY, status);
     }
@@ -407,23 +441,34 @@ public final class FreezeMonitorService extends Service {
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL |
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
     }
-    private static int lockedFlags() { return baseFlags() | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE; }
-    private static int editFlags() { return baseFlags() & ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE; }
+
+    private static int lockedFlags() {
+        return baseFlags() | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+    }
+
+    private static int editFlags() {
+        return baseFlags() & ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
+    }
 
     private void startAsForeground() {
         Notification notification = buildNotification();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
-        } else startForeground(NOTIFICATION_ID, notification);
+        } else {
+            startForeground(NOTIFICATION_ID, notification);
+        }
     }
 
     private Notification buildNotification() {
         Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? new Notification.Builder(this, CHANNEL_ID) : new Notification.Builder(this);
-        return builder.setSmallIcon(android.R.drawable.ic_menu_view)
+                ? new Notification.Builder(this, CHANNEL_ID)
+                : new Notification.Builder(this);
+        return builder
+                .setSmallIcon(android.R.drawable.ic_menu_view)
                 .setContentTitle("GREAT visual monitor")
-                .setContentText("Monitoring one tiny screen region for Freeze")
-                .setOngoing(true).build();
+                .setContentText("Screen capture is ready for the robot monitor")
+                .setOngoing(true)
+                .build();
     }
 
     private void ensureNotificationChannel() {
@@ -432,7 +477,7 @@ public final class FreezeMonitorService extends Service {
         if (nm == null) return;
         NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID, "GREAT visual monitor", NotificationManager.IMPORTANCE_LOW);
-        channel.setDescription("Required while GREAT monitors the selected screen point");
+        channel.setDescription("Required while GREAT keeps screen capture ready for the robot monitor");
         nm.createNotificationChannel(channel);
     }
 
@@ -442,22 +487,35 @@ public final class FreezeMonitorService extends Service {
         running = false;
         editing = false;
         monitoringActive = false;
+        cancelFreezeTimeout();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
         publicStatus = "Monitor stopped";
         removeOverlay();
-        if (imageReader != null) try { imageReader.setOnImageAvailableListener(null, null); } catch (Throwable ignored) { }
-        if (virtualDisplay != null) { try { virtualDisplay.release(); } catch (Throwable ignored) { } virtualDisplay = null; }
-        if (imageReader != null) { try { imageReader.close(); } catch (Throwable ignored) { } imageReader = null; }
+        if (imageReader != null) {
+            try { imageReader.setOnImageAvailableListener(null, null); } catch (Throwable ignored) { }
+        }
+        if (virtualDisplay != null) {
+            try { virtualDisplay.release(); } catch (Throwable ignored) { }
+            virtualDisplay = null;
+        }
+        if (imageReader != null) {
+            try { imageReader.close(); } catch (Throwable ignored) { }
+            imageReader = null;
+        }
         if (projection != null) {
-            MediaProjection p = projection; projection = null;
+            MediaProjection p = projection;
+            projection = null;
             try { p.stop(); } catch (Throwable ignored) { }
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE); else stopForeground(true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE);
+        else stopForeground(true);
         stopSelf();
     }
 
     private void removeOverlay() {
-        if (monitorView != null) try { windowManager.removeView(monitorView); } catch (Throwable ignored) { }
+        if (monitorView != null) {
+            try { windowManager.removeView(monitorView); } catch (Throwable ignored) { }
+        }
         monitorView = null;
         overlayParams = null;
         dragState = null;
@@ -467,6 +525,7 @@ public final class FreezeMonitorService extends Service {
         running = false;
         editing = false;
         monitoringActive = false;
+        cancelFreezeTimeout();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
         removeOverlay();
         if (!shuttingDown) {
@@ -484,32 +543,44 @@ public final class FreezeMonitorService extends Service {
 
     @SuppressWarnings("deprecation")
     private static Intent parcelableIntent(Intent source, String key) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) return source.getParcelableExtra(key, Intent.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            return source.getParcelableExtra(key, Intent.class);
+        }
         return source.getParcelableExtra(key);
     }
 
     private final class MonitorView extends View {
         private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
+
         MonitorView() {
             super(FreezeMonitorService.this);
             stroke.setStyle(Paint.Style.STROKE);
             stroke.setStrokeWidth(Math.max(1f, getResources().getDisplayMetrics().density));
         }
+
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             stroke.setColor(monitorColor);
-            canvas.drawCircle(getWidth() / 2f, getHeight() / 2f,
-                    Math.max(0.5f, sensorDiameterPx() / 2f), stroke);
+            float radius = Math.max(0.5f, sensorDiameterPx() / 2f);
+            canvas.drawCircle(getWidth() / 2f, getHeight() / 2f, radius, stroke);
         }
     }
 
-    private static int clamp(int value, int min, int max) { return Math.max(min, Math.min(max, value)); }
+    private static int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
+    }
 
     private static final class DragState {
-        final int startX, startY;
-        final float touchX, touchY;
+        final int startX;
+        final int startY;
+        final float touchX;
+        final float touchY;
+
         DragState(int startX, int startY, float touchX, float touchY) {
-            this.startX = startX; this.startY = startY; this.touchX = touchX; this.touchY = touchY;
+            this.startX = startX;
+            this.startY = startY;
+            this.touchX = touchX;
+            this.touchY = touchY;
         }
     }
 }
