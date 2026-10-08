@@ -9,7 +9,6 @@ import android.os.Build;
 import android.os.IBinder;
 import android.util.DisplayMetrics;
 import android.view.Display;
-import android.view.MotionEvent;
 import android.view.WindowManager;
 
 import com.great.app.config.TriggerSettingsStore;
@@ -17,7 +16,7 @@ import com.great.app.core.GreatEngine;
 
 import rikka.shizuku.Shizuku;
 
-/** Process-wide bridge to GREAT's Shizuku trigger UserService. */
+/** Process-wide bridge to GREAT's Shizuku passive trigger UserService. */
 public final class ShizukuTouchEngine {
     public interface Listener {
         void onStateChanged(boolean ready, String status);
@@ -123,7 +122,7 @@ public final class ShizukuTouchEngine {
                     .daemon(false)
                     .processNameSuffix("great_touch")
                     .debuggable(false)
-                    .version(3);
+                    .version(4);
         }
 
         try {
@@ -185,25 +184,6 @@ public final class ShizukuTouchEngine {
 
         service.configureTrigger(settings.enabled(), centerX, centerY, diameterPx / 2f,
                 width, height, rotation, settings.revision());
-    }
-
-    /** Legacy forwarding path retained only for compatibility; locked trigger mode never calls it. */
-    public boolean forward(MotionEvent event, int displayId) {
-        IShizukuTouchService service = remote;
-        if (!ready || service == null || event == null) return false;
-        int action = event.getActionMasked();
-        if (action != MotionEvent.ACTION_DOWN && action != MotionEvent.ACTION_MOVE
-                && action != MotionEvent.ACTION_UP && action != MotionEvent.ACTION_CANCEL) return false;
-        try {
-            return service.injectMotion(action, event.getDownTime(), event.getEventTime(),
-                    event.getRawX(), event.getRawY(), displayId);
-        } catch (Throwable e) {
-            ready = false;
-            status = "Legacy touch forwarding failed";
-            GreatEngine.instance().freezeCore().setHoldTrigger(false);
-            publish();
-            return false;
-        }
     }
 
     public synchronized void unbind() {
