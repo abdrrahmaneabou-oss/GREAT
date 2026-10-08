@@ -79,7 +79,17 @@ public final class PixelTriggerMonitorEngine {
     public void process(Sample sample) {
         if (sample == null || sample.count() == 0) return;
         switch (state) {
-            case WAITING_FOR_WHITE -> waitForWhite(sample, REQUIRED_ARM_FRAMES);
+            case WAITING_FOR_WHITE -> {
+                if (sample.isArmingWhite()) {
+                    waitForWhite(sample, REQUIRED_ARM_FRAMES);
+                } else {
+                    // Monitoring is ON and the sampled point is not white: this is the red/FIRED
+                    // state. Red must always mean Freeze ON.
+                    whiteFrames.clear();
+                    baseline = null;
+                    setState(State.FIRED);
+                }
+            }
             case ARMED -> {
                 whiteFrames.clear();
                 if (baseline != null && isProbeDepartureFrom(sample, baseline) && sample.isFireLuminance()) {
