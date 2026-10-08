@@ -17,7 +17,7 @@ import rikka.shizuku.SystemServiceHelper;
 public final class GreatTouchUserService extends IShizukuTouchService.Stub {
     private static final String INPUT_DESCRIPTOR = "android.hardware.input.IInputManager";
     private static final int FALLBACK_INJECT_TRANSACTION = 11;
-    private static final int INJECT_MODE_ASYNC = 0;
+    private static final int INJECT_MODE_WAIT_FOR_RESULT = 1;
 
     private IBinder inputBinder;
     private int injectTransaction = -1;
@@ -40,8 +40,8 @@ public final class GreatTouchUserService extends IShizukuTouchService.Stub {
         return backend;
     }
 
-    @Override public void injectMotion(int action, long downTime, long eventTime,
-                                       float x, float y, int displayId) {
+    @Override public boolean injectMotion(int action, long downTime, long eventTime,
+                                          float x, float y, int displayId) {
         IBinder binder;
         int transaction;
         synchronized (this) {
@@ -49,7 +49,7 @@ public final class GreatTouchUserService extends IShizukuTouchService.Stub {
             binder = inputBinder;
             transaction = injectTransaction;
         }
-        if (binder == null || transaction <= 0) return;
+        if (binder == null || transaction <= 0) return false;
 
         MotionEvent event = MotionEvent.obtain(
                 downTime,
@@ -73,13 +73,15 @@ public final class GreatTouchUserService extends IShizukuTouchService.Stub {
         try {
             data.writeInterfaceToken(INPUT_DESCRIPTOR);
             data.writeTypedObject(event, 0);
-            data.writeInt(INJECT_MODE_ASYNC);
-            binder.transact(transaction, data, reply, 0);
+            data.writeInt(INJECT_MODE_WAIT_FOR_RESULT);
+            if (!binder.transact(transaction, data, reply, 0)) return false;
             reply.readException();
+            return reply.dataAvail() <= 0 || reply.readInt() != 0;
         } catch (Throwable ignored) {
             synchronized (this) {
                 backend = "IInputManager injection failed";
             }
+            return false;
         } finally {
             reply.recycle();
             data.recycle();
