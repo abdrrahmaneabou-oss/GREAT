@@ -1,11 +1,12 @@
 package com.great.app.shizuku;
 
-import android.os.Build;
 import android.os.IBinder;
 import android.os.Parcel;
 import android.os.Process;
 import android.view.InputDevice;
 import android.view.MotionEvent;
+
+import java.lang.reflect.Method;
 
 import rikka.shizuku.SystemServiceHelper;
 
@@ -65,7 +66,7 @@ public final class GreatTouchUserService extends IShizukuTouchService.Stub {
                 0
         );
         event.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) event.setDisplayId(displayId);
+        applyDisplayId(event, displayId);
 
         Parcel data = Parcel.obtain();
         Parcel reply = Parcel.obtain();
@@ -84,6 +85,14 @@ public final class GreatTouchUserService extends IShizukuTouchService.Stub {
             data.recycle();
             event.recycle();
         }
+    }
+
+    private static void applyDisplayId(MotionEvent event, int displayId) {
+        if (displayId < 0) return;
+        try {
+            Method method = event.getClass().getMethod("setDisplayId", int.class);
+            method.invoke(event, displayId);
+        } catch (Throwable ignored) { }
     }
 
     private synchronized void initializeBackend() {
