@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.media.projection.MediaProjectionConfig;
 import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
 import android.net.VpnService;
@@ -177,7 +178,7 @@ public final class GreatMainActivity extends Activity {
     private View showCirclesCard() {
         LinearLayout card = card();
         add(card, text("SHOW CIRCLES", 11, ACCENT, true), 0);
-        add(card, text("Shows 🤖 and ❄️ and prepares screen capture immediately.", 12, MUTED, false), 8);
+        add(card, text("Shows 🤖 and ❄️ and prepares full-screen capture immediately.", 12, MUTED, false), 8);
         TextView show = button("SHOW CIRCLES", true);
         show.setOnClickListener(v -> requestControlOverlay());
         add(card, show, 14);
@@ -312,7 +313,17 @@ public final class GreatMainActivity extends Activity {
             toast("Screen capture is unavailable");
             return;
         }
-        startActivityForResult(projectionManager.createScreenCaptureIntent(), MONITOR_CAPTURE);
+        Intent captureIntent;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // GREAT must observe the target app after the user leaves GREAT. Request the entire
+            // default display instead of Android 14+'s app-sharing mode, which would only capture
+            // one selected application and make the visual sensor blind inside the game.
+            MediaProjectionConfig config = MediaProjectionConfig.createConfigForDefaultDisplay();
+            captureIntent = projectionManager.createScreenCaptureIntent(config);
+        } else {
+            captureIntent = projectionManager.createScreenCaptureIntent();
+        }
+        startActivityForResult(captureIntent, MONITOR_CAPTURE);
     }
 
     private void chooseConfig() {
