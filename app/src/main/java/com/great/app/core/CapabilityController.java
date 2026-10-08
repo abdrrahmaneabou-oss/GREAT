@@ -18,7 +18,7 @@ public final class CapabilityController {
     private final AtomicLong revision = new AtomicLong();
     private volatile Listener listener = NOOP;
 
-    public EngineSnapshot snapshot() {
+    public synchronized EngineSnapshot snapshot() {
         return new EngineSnapshot(enabled.get(), revision.get());
     }
 
@@ -26,7 +26,7 @@ public final class CapabilityController {
         this.listener = Objects.requireNonNull(listener, "listener");
     }
 
-    public void set(Capability capability, boolean value) {
+    public synchronized void set(Capability capability, boolean value) {
         Objects.requireNonNull(capability, "capability");
         while (true) {
             EnumSet<Capability> before = enabled.get();
@@ -41,7 +41,7 @@ public final class CapabilityController {
         }
     }
 
-    public boolean toggle(Capability capability) {
+    public synchronized boolean toggle(Capability capability) {
         while (true) {
             EnumSet<Capability> before = enabled.get();
             boolean next = !before.contains(capability);
@@ -55,8 +55,13 @@ public final class CapabilityController {
         }
     }
 
-    /** Lifecycle reset intentionally does not trigger release/replay callbacks. */
-    public void reset() {
+    /** A canceled timer must never disable a later activation. */
+    public synchronized void setIfRevision(Capability capability, boolean value, long expectedRevision) {
+        if (revision.get() == expectedRevision) set(capability, value);
+    }
+
+    /** Lifecycle reset intentionally does not trigger release callbacks. */
+    public synchronized void reset() {
         enabled.set(EnumSet.noneOf(Capability.class));
         revision.incrementAndGet();
     }

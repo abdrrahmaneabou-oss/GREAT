@@ -13,6 +13,16 @@ public final class PacketPipelineTest {
         assertSame(payload, packet.data());
     }
 
+    @Test public void staleTimeoutCannotDisableNewActivation() {
+        CapabilityController state = new CapabilityController();
+        state.set(Capability.FREEZE, true);
+        long old = state.snapshot().revision();
+        state.set(Capability.FREEZE, false);
+        state.set(Capability.FREEZE, true);
+        state.setIfRevision(Capability.FREEZE, false, old);
+        assertTrue(state.snapshot().enabled(Capability.FREEZE));
+    }
+
     @Test public void controllerIsSingleSourceOfTruth() {
         CapabilityController state = new CapabilityController();
         state.set(Capability.FREEZE, true);

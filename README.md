@@ -1,33 +1,29 @@
-# GREAT
+# GREAT — Freeze
 
-Clean-room Android packet-control engine designed from final behavior backward rather than inherited from FOX.
+Android packet-control application with a single Freeze capability and a user-editable target list.
 
-GREAT keeps one live packet spine and one source of truth for capability state. FOX is used only as a behavioral reference; no FOX source, DEX, native library, resource or compatibility shim is reused.
+## Current build
 
-## Current status
+- Official AmneziaWG engine and one live path: Android TUN → GREAT → AmneziaWG.
+- Secure `.conf` import and Android Keystore-backed AES-GCM storage.
+- Expandable target card: enter an installed package name and press Add; remove entries individually.
+- Up to 15 unique packages, persisted across launches. No built-in game list.
+- `ConnectivityManager.getConnectionOwnerUid` checks the connection owner; GREAT's own UID and unknown owners are never targeted.
+- A movable floating Freeze button and a persisted 1–10 second auto-release duration.
+- arm64-v8a, Android 10+, version `0.3.0-freeze-only`.
 
-Working and verified on-device:
-- Secure AmneziaWG `.conf` import and AES-GCM storage backed by Android Keystore.
-- Official AmneziaWG userspace engine integration.
-- Android VPN/TUN lifecycle.
-- Live packet path: `Android TUN -> GREAT PacketPipeline -> local packet bridge -> AmneziaWG -> network`.
-- arm64-v8a-only build for a substantially smaller APK.
+## Freeze rules
 
-Build 2A foundation now adds:
-- Minimal IPv4/IPv6 packet parser with TCP/UDP/ICMP metadata.
-- Protocol classifier and immutable `PacketContext`.
-- Shared capability policy engine.
-- Bounded shared packet scheduler.
-- Lock-free diagnostics counters without packet-content logging.
-- Generic configurable packet selectors with no hard-coded application assumptions.
-- Ghost selective-policy implementation behind that selector boundary.
-- Floating Freeze / Ghost / Teleport control overlay foundation.
-- Deterministic parser, policy and scheduler tests.
+Only unfragmented inbound IPv4 UDP packets belonging to selected applications are eligible.
+Remote source ports 7000–10000 inclusive bypass Freeze. The UDP payload must be strictly greater than `20 + random(0..9)` and strictly less than `450 + random(0..49)`; thresholds are sampled per packet.
 
-## Next
+The global RAM queue holds at most 10,000 packets across all selected apps. Overflow evicts the oldest packet. Manual off or timeout releases retained packets in queue order to the Android TUN; after even indices starting at 2, release pauses for 1–3 ms. TCP, IPv6, outbound and unmatched traffic pass normally. There is no Jitter feature in GREAT.
 
-Build 2B will define the exact live targeting semantics explicitly, then complete Freeze hold/release, Ghost live selection and Teleport capture/transition/replay on the same packet spine and scheduler.
+Changing the target list ends the current Freeze and releases its held packets. VPN stop/reset discards retained packets and cancels pending release work. An empty list affects no app. Targeting changes Freeze eligibility only; normal VPN routing still follows the imported config.
 
-Build 3 is production hardening and final UI/performance work. Build 4 remains bugfix-only.
+Package names are resolved to installed UIDs when the VPN starts and when packages or the list change. Android apps sharing a UID cannot be distinguished by this API. Package visibility is declared for user-entered arbitrary package names. No packet payloads or config secrets are logged.
 
-See `docs/ARCHITECTURE.md` and `docs/ROADMAP.md`.
+## Validation
+
+GitHub Actions runs `gradle :app:testDebugUnitTest :app:assembleDebug` and publishes `GREAT-freeze-only-debug`.
+Real-device verification is still required for connection ownership, background lifecycle and observable application behavior.

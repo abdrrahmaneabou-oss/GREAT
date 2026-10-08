@@ -14,6 +14,8 @@ import android.provider.Settings;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.LinearLayout;
+import android.widget.EditText;
+import android.text.InputType;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -21,8 +23,11 @@ import android.widget.Toast;
 import com.great.app.config.AwgConfigParser;
 import com.great.app.config.CapabilitySettingsStore;
 import com.great.app.config.SecureConfigStore;
+import com.great.app.config.TargetAppsStore;
+import com.great.app.core.TargetPackages;
 import com.great.app.core.EngineDiagnostics;
-import com.great.app.core.FoxCapabilityCore;
+import com.great.app.core.Capability;
+import com.great.app.core.FreezeCore;
 import com.great.app.core.GreatEngine;
 import com.great.app.vpn.GreatVpnService;
 
@@ -49,13 +54,17 @@ public final class MainActivity extends Activity {
     private TextView start;
     private TextView stats;
     private TextView freezeDuration;
-    private TextView teleportDuration;
+    private TargetAppsStore targetStore;
+    private EditText packageInput;
+    private TextView targetHeading;
+    private LinearLayout targetList;
     private boolean overlayPending;
     private CapabilitySettingsStore tuningStore;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         tuningStore = new CapabilitySettingsStore(this);
+        targetStore = new TargetAppsStore(this);
         applySavedTuning();
         setContentView(content());
         refresh();
@@ -82,7 +91,7 @@ public final class MainActivity extends Activity {
 
         add(root, text("GREAT", 14, ACCENT, true), 0);
         add(root, text("Connection", 32, TEXT, true), 12);
-        add(root, text("One packet path. One capability engine.", 14, MUTED, false), 8);
+        add(root, text("Freeze for the applications you choose.", 14, MUTED, false), 8);
 
         LinearLayout card = column();
         card.setPadding(dp(18), dp(18), dp(18), dp(18));
@@ -103,19 +112,20 @@ public final class MainActivity extends Activity {
         stop.setOnClickListener(v -> stopGreat());
         add(card, stop, 10);
 
-        TextView controls = button("SHOW CONTROLS", false);
+        TextView controls = button("SHOW FREEZE CONTROL", false);
         controls.setOnClickListener(v -> requestOverlay());
         add(card, controls, 10);
         add(root, card, 26);
+
+        add(root, targetCard(), 14);
 
         LinearLayout tuningCard = column();
         tuningCard.setPadding(dp(18), dp(18), dp(18), dp(18));
         tuningCard.setBackground(round(SURFACE, 20));
         add(tuningCard, text("AUTO RELEASE", 11, ACCENT, true), 0);
-        add(tuningCard, text("Freeze and Teleport release automatically at the selected limit. Turning them off releases earlier.",
+        add(tuningCard, text("Freeze releases automatically at the selected limit. Turning it off releases earlier.",
                 12, MUTED, false), 10);
-        freezeDuration = durationRow(tuningCard, "Freeze", true);
-        teleportDuration = durationRow(tuningCard, "Teleport", false);
+        freezeDuration = durationRow(tuningCard);
         refreshDurations();
         add(root, tuningCard, 14);
 
@@ -127,7 +137,7 @@ public final class MainActivity extends Activity {
         add(diagnosticCard, stats, 12);
         add(root, diagnosticCard, 14);
 
-        add(root, text("Build 2B • FOX capability core transplant + timed release + movable overlay",
+        add(root, text("Freeze • Editable targets • 10,000-packet limit",
                 12, MUTED, false), 18);
 
         ScrollView scroll = new ScrollView(this);
@@ -136,12 +146,12 @@ public final class MainActivity extends Activity {
         return scroll;
     }
 
-    private TextView durationRow(LinearLayout parent, String label, boolean freeze) {
+    private TextView durationRow(LinearLayout parent) {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
 
-        TextView title = text(label, 14, TEXT, true);
+        TextView title = text("Freeze", 14, TEXT, true);
         LinearLayout.LayoutParams titleLp = new LinearLayout.LayoutParams(0, -2, 1f);
         row.addView(title, titleLp);
 
@@ -151,8 +161,8 @@ public final class MainActivity extends Activity {
         value.setMinWidth(dp(58));
         TextView plus = smallButton("+");
 
-        minus.setOnClickListener(v -> adjustDuration(freeze, -1));
-        plus.setOnClickListener(v -> adjustDuration(freeze, 1));
+        minus.setOnClickListener(v -> adjustDuration(-1));
+        plus.setOnClickListener(v -> adjustDuration(1));
 
         row.addView(minus, new LinearLayout.LayoutParams(dp(42), dp(42)));
         row.addView(value, new LinearLayout.LayoutParams(dp(64), dp(42)));
@@ -170,27 +180,84 @@ public final class MainActivity extends Activity {
         return v;
     }
 
-    private void adjustDuration(boolean freeze, int delta) {
-        GreatEngine engine = GreatEngine.instance();
-        if (freeze) {
-            int value = tuningStore.setFreezeSeconds(tuningStore.freezeSeconds() + delta);
-            engine.foxCapabilities().setFreezeDurationSeconds(value);
-        } else {
-            int value = tuningStore.setTeleportSeconds(tuningStore.teleportSeconds() + delta);
-            engine.foxCapabilities().setTeleportDurationSeconds(value);
-        }
+    private void adjustDuration(int delta) {
+        int value = tuningStore.setFreezeSeconds(tuningStore.freezeSeconds() + delta);
+        GreatEngine.instance().freezeCore().setFreezeDurationSeconds(value);
         refreshDurations();
     }
 
     private void applySavedTuning() {
-        GreatEngine engine = GreatEngine.instance();
-        engine.foxCapabilities().setFreezeDurationSeconds(tuningStore.freezeSeconds());
-        engine.foxCapabilities().setTeleportDurationSeconds(tuningStore.teleportSeconds());
+        GreatEngine.instance().freezeCore().setFreezeDurationSeconds(tuningStore.freezeSeconds());
     }
 
     private void refreshDurations() {
         if (freezeDuration != null) freezeDuration.setText(tuningStore.freezeSeconds() + " s");
-        if (teleportDuration != null) teleportDuration.setText(tuningStore.teleportSeconds() + " s");
+    }
+
+    private View targetCard() {
+        LinearLayout card = column();
+        card.setPadding(dp(18), dp(18), dp(18), dp(18));
+        card.setBackground(round(SURFACE, 20));
+        targetHeading = text("", 14, ACCENT, true);
+        targetHeading.setMinHeight(dp(48));
+        targetHeading.setGravity(Gravity.CENTER_VERTICAL);
+        targetHeading.setContentDescription("Manage targeted applications");
+        add(card, targetHeading, 0);
+        add(card, text("Tap to edit. Enter a package name, then press Add. Only listed apps are affected by Freeze.",
+                12, MUTED, false), 4);
+
+        LinearLayout editor = column();
+        editor.setVisibility(View.GONE);
+        packageInput = new EditText(this);
+        packageInput.setSingleLine(true);
+        packageInput.setTextColor(TEXT);
+        packageInput.setHintTextColor(MUTED);
+        packageInput.setHint("com.android.chrome");
+        packageInput.setContentDescription("Application package name");
+        packageInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        add(editor, packageInput, 12);
+        TextView addButton = button("ADD APPLICATION", true);
+        addButton.setOnClickListener(v -> {
+            try {
+                targetStore.add(packageInput.getText().toString());
+                packageInput.setText("");
+                refreshTargets();
+                toast("Application added. Active Freeze ends when the target list changes.");
+            } catch (IllegalArgumentException e) { packageInput.setError(e.getMessage()); }
+        });
+        add(editor, addButton, 10);
+        targetList = column();
+        add(editor, targetList, 8);
+        add(card, editor, 0);
+        targetHeading.setOnClickListener(v -> editor.setVisibility(editor.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
+        card.setOnClickListener(v -> editor.setVisibility(editor.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
+        refreshTargets();
+        return card;
+    }
+
+    private void refreshTargets() {
+        if (targetHeading == null || targetList == null) return;
+        java.util.List<String> names = targetStore.names();
+        targetHeading.setText("TARGET APPLICATIONS  " + names.size() + "/" + TargetPackages.LIMIT);
+        targetList.removeAllViews();
+        if (names.isEmpty()) {
+            add(targetList, text("No applications added. Freeze affects nothing until you add a target.", 12, MUTED, false), 8);
+            return;
+        }
+        for (String name : names) {
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            TextView label = text(name, 13, TEXT, false);
+            row.addView(label, new LinearLayout.LayoutParams(0, -2, 1f));
+            TextView remove = text("Remove", 13, ACCENT, true);
+            remove.setMinHeight(dp(48));
+            remove.setGravity(Gravity.CENTER);
+            remove.setPadding(dp(10), 0, dp(4), 0);
+            remove.setContentDescription("Remove " + name);
+            remove.setOnClickListener(v -> { targetStore.remove(name); refreshTargets(); });
+            row.addView(remove, new LinearLayout.LayoutParams(-2, -2));
+            add(targetList, row, 4);
+        }
     }
 
     private void chooseConfig() {
@@ -274,14 +341,13 @@ public final class MainActivity extends Activity {
         if (stats == null) return;
         GreatEngine engine = GreatEngine.instance();
         EngineDiagnostics.Snapshot s = engine.diagnostics().snapshot();
-        FoxCapabilityCore fox = engine.foxCapabilities();
-        String capabilities = engine.capabilities().snapshot().enabledCapabilities().toString();
+        FreezeCore freeze = engine.freezeCore();
+        String active = engine.capabilities().snapshot().enabled(Capability.FREEZE) ? "ON" : "OFF";
         stats.setText("OUT " + s.outbound() + "   IN " + s.inbound() +
-                "\nPASS " + s.passed() + "   DROP " + s.dropped() + "   HOLD " + s.held() +
-                "\nRELEASE " + s.released() + "   REPLAY " + s.replayed() + "   BAD " + s.malformed() +
-                "\nFREEZE Q " + fox.freezeQueueSize() + "   TELE Q " + fox.teleportQueueSize() +
-                (fox.teleportReplayActive() ? "   REPLAYING" : "") +
-                "\nACTIVE " + capabilities);
+                "\nPASS " + s.passed() + "   HOLD " + s.held() +
+                "\nRELEASE " + s.released() + "   EVICTED " + s.schedulerRejected() +
+                "\nFREEZE Q " + freeze.freezeQueueSize() + "/" + FreezeCore.CAPACITY +
+                "\nFREEZE " + active + "   TARGETS " + targetStore.names().size());
     }
 
     private static byte[] readBounded(InputStream input, int max) throws Exception {

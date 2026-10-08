@@ -12,7 +12,6 @@ public final class EngineDiagnostics {
     private final AtomicLong dropped = new AtomicLong();
     private final AtomicLong held = new AtomicLong();
     private final AtomicLong released = new AtomicLong();
-    private final AtomicLong replayed = new AtomicLong();
     private final AtomicLong scheduled = new AtomicLong();
     private final AtomicLong schedulerRejected = new AtomicLong();
 
@@ -33,23 +32,22 @@ public final class EngineDiagnostics {
     }
 
     public void released() { released.incrementAndGet(); }
-    public void replayed() { replayed.incrementAndGet(); }
     public void scheduled() { scheduled.incrementAndGet(); }
     public void schedulerRejected() { schedulerRejected.incrementAndGet(); }
 
     public Snapshot snapshot() {
         return new Snapshot(inbound.get(), outbound.get(), parsed.get(), malformed.get(),
-                passed.get(), dropped.get(), held.get(), released.get(), replayed.get(),
+                passed.get(), dropped.get(), held.get(), released.get(),
                 scheduled.get(), schedulerRejected.get());
     }
 
     public void reset() {
         inbound.set(0); outbound.set(0); parsed.set(0); malformed.set(0);
-        passed.set(0); dropped.set(0); held.set(0); released.set(0); replayed.set(0);
+        passed.set(0); dropped.set(0); held.set(0); released.set(0);
         scheduled.set(0); schedulerRejected.set(0);
     }
 
     public record Snapshot(long inbound, long outbound, long parsed, long malformed,
                            long passed, long dropped, long held, long released,
-                           long replayed, long scheduled, long schedulerRejected) { }
+                           long scheduled, long schedulerRejected) { }
 }

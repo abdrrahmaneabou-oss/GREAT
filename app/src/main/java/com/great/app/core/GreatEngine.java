@@ -3,16 +3,14 @@ package com.great.app.core;
 /** Process-wide owner of GREAT's packet decision state and capability infrastructure. */
 public final class GreatEngine {
     private static final GreatEngine INSTANCE = new GreatEngine();
-    private static final int SCHEDULER_CAPACITY = 512;
+
+    private volatile int targetCount;
 
     private final CapabilityController capabilities = new CapabilityController();
     private final EngineDiagnostics diagnostics = new EngineDiagnostics();
-    private final PacketScheduler scheduler = new PacketScheduler(SCHEDULER_CAPACITY);
     private final ConfigurablePacketSelector targetSelector = new ConfigurablePacketSelector();
-    private final FoxCapabilityCore foxCapabilities = new FoxCapabilityCore(capabilities, diagnostics);
-    private final PacketPolicy policy = new CapabilityPolicyEngine(
-            new FoxCapabilityPolicy(targetSelector, foxCapabilities),
-            new PassPolicy());
+    private final FreezeCore freezeCore = new FreezeCore(capabilities, diagnostics);
+    private final PacketPolicy policy = new FreezePolicy(targetSelector, freezeCore);
     private final PacketPipeline pipeline = new PacketPipeline(
             policy,
             capabilities,
@@ -21,27 +19,26 @@ public final class GreatEngine {
             diagnostics);
 
     private GreatEngine() {
-        capabilities.setListener(foxCapabilities::onCapabilityChanged);
+        capabilities.setListener(freezeCore::onCapabilityChanged);
     }
+
+    public int targetCount() { return targetCount; }
+    public void setTargetCount(int count) { targetCount = count; }
 
     public static GreatEngine instance() { return INSTANCE; }
     public CapabilityController capabilities() { return capabilities; }
     public PacketPipeline pipeline() { return pipeline; }
-    public PacketScheduler scheduler() { return scheduler; }
     public EngineDiagnostics diagnostics() { return diagnostics; }
-    public FoxCapabilityCore foxCapabilities() { return foxCapabilities; }
+    public FreezeCore freezeCore() { return freezeCore; }
 
-    /** Shared target gate for all three capabilities. It intentionally defaults to match-nothing. */
+    /** Target gate defaults to match-nothing until the active VPN resolves saved packages. */
     public ConfigurablePacketSelector targetSelector() { return targetSelector; }
 
-    /** Compatibility accessor retained for Build 2A callers; now aliases the shared target gate. */
-    public ConfigurablePacketSelector ghostSelector() { return targetSelector; }
-
     public void reset() {
-        foxCapabilities.reset();
+        freezeCore.reset();
         capabilities.reset();
-        scheduler.clear();
         diagnostics.reset();
         targetSelector.clear();
+        targetCount = 0;
     }
 }

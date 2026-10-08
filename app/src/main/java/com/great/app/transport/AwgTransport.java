@@ -7,7 +7,7 @@ import android.system.Os;
 import android.system.OsConstants;
 
 import com.great.app.config.AwgConfig;
-import com.great.app.core.FoxCapabilityCore;
+import com.great.app.core.FreezeCore;
 import com.great.app.core.PacketDecision;
 import com.great.app.core.PacketDirection;
 import com.great.app.core.PacketEnvelope;
@@ -39,8 +39,8 @@ public final class AwgTransport implements TunnelTransport {
     private static final int MAX_PACKET = 65535;
 
     private final PacketPipeline pipeline;
-    private final FoxCapabilityCore capabilities;
-    private final FoxCapabilityCore.OutputSink capabilitySink = this::emitCapabilityPacket;
+    private final FreezeCore capabilities;
+    private final FreezeCore.OutputSink capabilitySink = this::emitCapabilityPacket;
     private final Object bridgeWriteLock = new Object();
     private final Object tunWriteLock = new Object();
     private final AtomicLong outboundPackets = new AtomicLong();
@@ -55,7 +55,7 @@ public final class AwgTransport implements TunnelTransport {
     private Thread outboundThread;
     private Thread inboundThread;
 
-    public AwgTransport(PacketPipeline pipeline, FoxCapabilityCore capabilities) {
+    public AwgTransport(PacketPipeline pipeline, FreezeCore capabilities) {
         this.pipeline = Objects.requireNonNull(pipeline, "pipeline");
         this.capabilities = Objects.requireNonNull(capabilities, "capabilities");
     }

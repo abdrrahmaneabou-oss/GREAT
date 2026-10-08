@@ -1,53 +1,27 @@
 # GREAT architecture
 
-GREAT is a clean-room application. FOX is a behavioral reference only; no FOX source, DEX, native library, resource or compatibility shim is part of this project.
+## Packet path
 
-## Live packet path
+`Android TUN → PacketPipeline → AF_UNIX packet bridge → official AmneziaWG → network`
 
-GREAT owns the packet boundary instead of handing Android's TUN directly to AmneziaWG:
+Inbound packets follow the reverse path and use the same pipeline. Freeze delays delivery to the app, never re-sends inbound packets to the remote server.
 
-`Android TUN -> GREAT PacketPipeline -> AF_UNIX packet bridge -> official amneziawg-go -> network`
+## Ownership and targets
 
-Inbound traffic follows the reverse path and is evaluated by the same pipeline with `PacketDirection.INBOUND`.
+`TargetAppsStore` persists up to 15 user-entered packages and resolves installed UIDs. `GreatVpnService` reloads those UIDs at startup, preference changes and package lifecycle broadcasts. Each reload disables Freeze and installs a fresh `ConnectionOwnerSelector`.
 
-The bridge is intentionally tiny: it implements the upstream `tun.Device` contract over a packet-preserving local socket. Cryptography, handshakes, peer state, obfuscation and UDP transport remain in the pinned upstream AmneziaWG engine.
+The selector checks IPv4 UDP flow ownership with `getConnectionOwnerUid`. Outbound packets use source as local and destination as remote; inbound packets reverse those roles. Known owners are cached for 30 seconds in a 256-entry full-address/protocol/port LRU. Unknown ownership and lookup errors never match. GREAT's process UID is always excluded. Shared Android UIDs are an unavoidable ownership boundary.
 
-## Build 2A packet engine
+No per-app VPN allowlist is imposed: imported routes still control tunnel routing. Only Freeze eligibility uses the editable package list.
 
-The hot path is now:
+## Freeze
 
-`PacketEnvelope -> PacketParser -> PacketMetadata -> PacketClassifier -> PacketContext -> CapabilityPolicyEngine`
+`GreatEngine` owns the single state controller, configurable target selector, `FreezeCore`, pipeline and diagnostics. The policy applies the ownership gate before the core's incoming UDP size/port rules. The only capability enum value and floating control are Freeze.
 
-The parser extracts only the metadata required by policy decisions. IPv4, IPv6, TCP, UDP, ICMP and common IPv6 extension headers are handled without copying the packet payload.
+A locked FIFO copies eligible packets into RAM with a 10,000-packet global bound and O(1) size/eviction. A timer disables Freeze after the selected duration. Release writes retained packets through the same transport and preserves their queue order. Queue transitions are serialized; network writes never hold the queue lock. Session generations invalidate queued release work across reset/detach. An already in-flight write may complete during stop; transport closure prevents it from reaching a new tunnel.
 
-`EngineDiagnostics` records counters only. Packet contents, endpoint secrets and configuration keys are never logged.
+The base thresholds are 20/450 with per-packet random additions 0..9/0..49 and strict comparisons. Remote ports 7000..10000 are exempt. Fragmented traffic is passed rather than interpreted as a complete UDP message. No protocol conversion, legacy proxy socket stack or Jitter system is copied from FOX.
 
-`PacketScheduler` is one bounded shared queue primitive for future delay/release/replay work. Payload bytes are copied only when a packet must outlive the transport hot-path buffer.
+## Storage and security
 
-## Dependency direction
-
-UI -> VPN lifecycle -> transport boundary
-
-UI/overlay -> GreatEngine -> capability controller -> packet pipeline
-
-The packet pipeline does not depend on Android UI, AmneziaWG configuration syntax, or a concrete transport.
-
-## Invariants
-
-1. One process-wide source of truth for capability state (`GreatEngine`).
-2. One packet decision pipeline for both directions.
-3. No capability logic in Activity, VPN Service or overlay code.
-4. Raw `.conf` is validated, encrypted with AES-GCM and stored under `noBackupFilesDir`; the AES key remains in Android Keystore.
-5. Secret material is never logged and raw config buffers are zeroed after use where practical.
-6. AmneziaWG remains upstream; GREAT adds only its own packet-device adapter around the official engine.
-7. Capability targeting is independent from capability state. The default selector matches nothing until an explicit targeting rule is supplied.
-8. Internal transport failure is fail-closed: the Android TUN remains claimed while the AWG bridge is stopped, preventing accidental direct fallback.
-9. The Android package is currently arm64-v8a only by design.
-10. Queues are bounded; unbounded packet retention is forbidden.
-
-## Build 2 sequence
-
-1. Prove `TUN -> PacketPipeline(PASS) -> AWG` on-device without breaking connectivity. Completed.
-2. Add parser, protocol classifier, diagnostics, bounded scheduler and overlay state controls. Build 2A.
-3. Define the exact targeting rule for live capability decisions without assuming an application or use-case.
-4. Complete Freeze, Ghost and Teleport state machines over the same spine and scheduler. Build 2B.
+Configs use Android Keystore-backed AES-GCM in app-private storage. Target names, Freeze duration and overlay coordinates use private preferences. Packet buffers are RAM-only. Diagnostics contain counts, never packet bodies or credentials. The upstream AmneziaWG module remains pinned and unchanged.

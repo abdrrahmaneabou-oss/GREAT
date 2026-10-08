@@ -1,6 +1,17 @@
 package com.great.app.vpn;
 
 import android.content.Intent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.net.ConnectivityManager;
+import android.os.Process;
+import android.os.SystemClock;
+import com.great.app.config.TargetAppsStore;
+import com.great.app.core.ConnectionOwnerSelector;
+import com.great.app.core.Capability;
+import java.util.Set;
 import android.net.VpnService;
 import android.os.IBinder;
 
@@ -19,6 +30,40 @@ public final class GreatVpnService extends VpnService {
     public static final String ACTION_START = "com.great.app.action.START";
     public static final String ACTION_STOP = "com.great.app.action.STOP";
     private TunnelTransport transport;
+    private TargetAppsStore targets;
+    private final SharedPreferences.OnSharedPreferenceChangeListener targetChanges = (prefs, key) -> {
+        if (TargetAppsStore.KEY.equals(key) && transport != null) refreshTargets();
+    };
+    private final BroadcastReceiver packageChanges = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            if (transport != null) refreshTargets();
+        }
+    };
+
+    @Override public void onCreate() {
+        super.onCreate();
+        targets = new TargetAppsStore(this);
+        targets.register(targetChanges);
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(Intent.ACTION_PACKAGE_ADDED);
+        filter.addAction(Intent.ACTION_PACKAGE_REMOVED);
+        filter.addAction(Intent.ACTION_PACKAGE_CHANGED);
+        filter.addAction(Intent.ACTION_PACKAGE_REPLACED);
+        filter.addDataScheme("package");
+        registerReceiver(packageChanges, filter);
+    }
+
+    private void refreshTargets() {
+        GreatEngine engine = GreatEngine.instance();
+        // Finish the previous Freeze before changing which applications it affects.
+        engine.capabilities().set(Capability.FREEZE, false);
+        Set<Integer> uids = targets.resolveUids();
+        ConnectivityManager connectivity = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        engine.targetSelector().set(new ConnectionOwnerSelector(uids, Process.myUid(),
+                (protocol, local, remote) -> connectivity.getConnectionOwnerUid(protocol, local, remote),
+                SystemClock::elapsedRealtime));
+        engine.setTargetCount(uids.size());
+    }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) return START_NOT_STICKY;
@@ -39,12 +84,12 @@ public final class GreatVpnService extends VpnService {
             engine.reset();
 
             CapabilitySettingsStore tuning = new CapabilitySettingsStore(this);
-            engine.foxCapabilities().setFreezeDurationSeconds(tuning.freezeSeconds());
-            engine.foxCapabilities().setTeleportDurationSeconds(tuning.teleportSeconds());
+            engine.freezeCore().setFreezeDurationSeconds(tuning.freezeSeconds());
 
+            refreshTargets();
             raw = new SecureConfigStore(this).load();
             AwgConfig config = new AwgConfigParser().parse(raw);
-            TunnelTransport next = new AwgTransport(engine.pipeline(), engine.foxCapabilities());
+            TunnelTransport next = new AwgTransport(engine.pipeline(), engine.freezeCore());
             next.start(this, config, raw);
             transport = next;
         } catch (Exception e) {
@@ -65,6 +110,11 @@ public final class GreatVpnService extends VpnService {
         GreatEngine.instance().reset();
     }
 
-    @Override public void onDestroy() { stopEngine(); super.onDestroy(); }
+    @Override public void onDestroy() {
+        targets.unregister(targetChanges);
+        unregisterReceiver(packageChanges);
+        stopEngine();
+        super.onDestroy();
+    }
     @Override public IBinder onBind(Intent intent) { return super.onBind(intent); }
 }

@@ -18,6 +18,7 @@ import android.view.MotionEvent;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import com.great.app.core.Capability;
 import com.great.app.core.GreatEngine;
@@ -87,8 +88,6 @@ public final class CapabilityOverlayService extends Service {
         root.addView(drag, dragLp);
 
         addCapability(Capability.FREEZE, "Freeze");
-        addCapability(Capability.GHOST, "Ghost");
-        addCapability(Capability.TELEPORT, "Teleport");
 
         Point screen = screenSize();
         int savedX = prefs.getInt(KEY_X, Math.max(0, screen.x - dp(144)));
@@ -114,7 +113,14 @@ public final class CapabilityOverlayService extends Service {
         button.setGravity(Gravity.CENTER);
         button.setMinHeight(dp(44));
         button.setPadding(dp(10), dp(8), dp(10), dp(8));
-        button.setOnClickListener(v -> GreatEngine.instance().capabilities().toggle(capability));
+        button.setOnClickListener(v -> {
+            GreatEngine engine = GreatEngine.instance();
+            if (!engine.capabilities().snapshot().enabled(capability) && engine.targetCount() == 0) {
+                Toast.makeText(this, "Start GREAT with an installed target application first", Toast.LENGTH_LONG).show();
+                return;
+            }
+            engine.capabilities().toggle(capability);
+        });
         buttons.put(capability, button);
         render(button, capability);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
@@ -153,7 +159,7 @@ public final class CapabilityOverlayService extends Service {
     private void moveTo(int x, int y) {
         Point screen = screenSize();
         int width = root.getWidth() > 0 ? root.getWidth() : dp(132);
-        int height = root.getHeight() > 0 ? root.getHeight() : dp(190);
+        int height = root.getHeight() > 0 ? root.getHeight() : dp(100);
         overlayParams.x = clamp(x, 0, Math.max(0, screen.x - width));
         overlayParams.y = clamp(y, 0, Math.max(0, screen.y - height));
         try { windowManager.updateViewLayout(root, overlayParams); } catch (Exception ignored) { }
