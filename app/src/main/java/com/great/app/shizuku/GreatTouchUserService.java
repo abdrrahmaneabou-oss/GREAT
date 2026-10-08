@@ -6,17 +6,16 @@ import android.os.Process;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.lang.reflect.Method;
-import java.util.Locale;
 
 import rikka.shizuku.SystemServiceHelper;
 
 /**
- * Shizuku UserService. The live trigger backend is not enabled here yet; getBackend() performs a
- * one-shot capability probe so GREAT can verify that the Shizuku shell can see a multi-touch
- * touchscreen before we attach any runtime trigger logic.
+ * Shizuku UserService for GREAT's trigger engine.
+ *
+ * The locked overlay itself stays NOT_TOUCHABLE. This service owns the current trigger geometry
+ * and exposes a callback contract for the future passive touch backend. The current build performs
+ * only one-shot touch-source discovery; it does not capture live device-wide touch events yet.
  */
 public final class GreatTouchUserService extends IShizukuTouchService.Stub {
     private static final String INPUT_DESCRIPTOR = "android.hardware.input.IInputManager";
@@ -27,11 +26,22 @@ public final class GreatTouchUserService extends IShizukuTouchService.Stub {
     private int injectTransaction = -1;
     private String backend = "Not initialized";
 
+    private volatile ITouchTriggerCallback triggerCallback;
+    private volatile boolean triggerEnabled;
+    private volatile float centerX;
+    private volatile float centerY;
+    private volatile float radiusPx;
+    private volatile int screenWidth = 1;
+    private volatile int screenHeight = 1;
+    private volatile int rotation;
+    private volatile long triggerRevision = -1L;
+
     public GreatTouchUserService() {
         initializeBackend();
     }
 
     @Override public void destroy() {
+        triggerCallback = null;
         System.exit(0);
     }
 
@@ -41,7 +51,45 @@ public final class GreatTouchUserService extends IShizukuTouchService.Stub {
 
     @Override public synchronized String getBackend() {
         if (inputBinder == null || !inputBinder.isBinderAlive()) initializeBackend();
-        return backend + " • " + probeTouchSource();
+        TouchSourceProbe.Result probe = TouchSourceProbe.run();
+        return backend + " • " + probe.detail()
+                + " • geometryRev=" + triggerRevision;
+    }
+
+    @Override public synchronized void configureTrigger(boolean enabled,
+                                                        float nextCenterX, float nextCenterY,
+                                                        float nextRadiusPx,
+                                                        int nextScreenWidth, int nextScreenHeight,
+                                                        int nextRotation, long revision) {
+        if (revision < triggerRevision) return;
+        triggerEnabled = enabled;
+        centerX = nextCenterX;
+        centerY = nextCenterY;
+        radiusPx = Math.max(0f, nextRadiusPx);
+        screenWidth = Math.max(1, nextScreenWidth);
+        screenHeight = Math.max(1, nextScreenHeight);
+        rotation = nextRotation & 3;
+        triggerRevision = revision;
+
+        ITouchTriggerCallback callback = triggerCallback;
+        if (callback != null) {
+            try {
+                callback.onMonitorStatus("Geometry synced • rev=" + revision
+                        + " • " + Math.round(centerX) + "," + Math.round(centerY)
+                        + " • r=" + Math.round(radiusPx)
+                        + " • " + screenWidth + "x" + screenHeight
+                        + " • rot=" + rotation
+                        + " • " + (triggerEnabled ? "ON" : "OFF"));
+            } catch (Throwable ignored) { }
+        }
+    }
+
+    @Override public void setTriggerCallback(ITouchTriggerCallback callback) {
+        triggerCallback = callback;
+    }
+
+    @Override public long getTriggerRevision() {
+        return triggerRevision;
     }
 
     @Override public boolean injectMotion(int action, long downTime, long eventTime,
@@ -121,42 +169,6 @@ public final class GreatTouchUserService extends IShizukuTouchService.Stub {
             injectTransaction = -1;
             String message = e.getMessage();
             backend = "Input backend error: " + (message == null ? e.getClass().getSimpleName() : message);
-        }
-    }
-
-    private static String probeTouchSource() {
-        java.lang.Process process = null;
-        try {
-            process = new ProcessBuilder("/system/bin/getevent", "-pl")
-                    .redirectErrorStream(true)
-                    .start();
-            boolean hasMtX = false;
-            boolean hasMtY = false;
-            String deviceName = null;
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    String lower = line.toLowerCase(Locale.US);
-                    if (lower.contains("name:") && (lower.contains("touch") || lower.contains("goodix")
-                            || lower.contains("synaptics") || lower.contains("fts"))) {
-                        int first = line.indexOf('"');
-                        int last = line.lastIndexOf('"');
-                        if (first >= 0 && last > first) deviceName = line.substring(first + 1, last);
-                    }
-                    if (line.contains("ABS_MT_POSITION_X")) hasMtX = true;
-                    if (line.contains("ABS_MT_POSITION_Y")) hasMtY = true;
-                }
-            }
-            try { process.waitFor(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
-            if (hasMtX && hasMtY) {
-                return "multi-touch source visible" + (deviceName == null ? "" : " • " + deviceName);
-            }
-            return "no multi-touch source detected";
-        } catch (Throwable e) {
-            String message = e.getMessage();
-            return "touch probe failed: " + (message == null ? e.getClass().getSimpleName() : message);
-        } finally {
-            if (process != null) process.destroy();
         }
     }
 }
