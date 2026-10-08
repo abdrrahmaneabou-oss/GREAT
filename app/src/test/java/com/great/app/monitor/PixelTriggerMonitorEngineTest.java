@@ -27,9 +27,16 @@ public final class PixelTriggerMonitorEngineTest {
         assertTrue(s.isArmingWhite());
     }
 
-    @Test public void twoOfFiveWhiteProbesDoNotArm() {
+    @Test public void whiteCenterCanArmEvenWhenRingProbesAreNotWhite() {
         PixelTriggerMonitorEngine.Sample s = sample(
-                0xffffff, 0xffffff, 0x202020, 0x202020, 0x202020);
+                0xffffff, 0xffb84d, 0xffb84d, 0xffb84d, 0xffb84d);
+        assertEquals(0.20f, s.whiteRatio(), 0.001f);
+        assertTrue(s.isArmingWhite());
+    }
+
+    @Test public void darkCenterWithOnlyOuterWhiteDoesNotArm() {
+        PixelTriggerMonitorEngine.Sample s = sample(
+                0x202020, 0xffffff, 0xffffff, 0x202020, 0x202020);
         assertEquals(0.40f, s.whiteRatio(), 0.001f);
         assertFalse(s.isArmingWhite());
     }
@@ -46,16 +53,13 @@ public final class PixelTriggerMonitorEngineTest {
         assertEquals(List.of(PixelTriggerMonitorEngine.State.ARMED), states);
     }
 
-    @Test public void fireRequiresProbeDepartureAndDarkAverageLuminance() {
+    @Test public void darkCenterCanFireEvenWhenRingProbesStayBright() {
         PixelTriggerMonitorEngine engine = new PixelTriggerMonitorEngine(null);
         PixelTriggerMonitorEngine.Sample white = sample(0xffffff, 0xffffff, 0xffffff, 0xffffff, 0xffffff);
         engine.process(white); engine.process(white); engine.process(white);
         assertEquals(PixelTriggerMonitorEngine.State.ARMED, engine.state());
 
-        engine.process(sample(0x101010, 0x101010, 0xffffff, 0xffffff, 0xffffff));
-        assertEquals(PixelTriggerMonitorEngine.State.ARMED, engine.state());
-
-        engine.process(sample(0x101010, 0x101010, 0x101010, 0x101010, 0xffffff));
+        engine.process(sample(0x101010, 0xffffff, 0xffffff, 0xffffff, 0xffffff));
         assertEquals(PixelTriggerMonitorEngine.State.FIRED, engine.state());
     }
 
