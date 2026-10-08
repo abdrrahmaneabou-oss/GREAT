@@ -92,6 +92,36 @@ public final class FreezeCoreTest {
             assertFalse(h.state.snapshot().enabled(Capability.FREEZE));
         }
     }
+    @Test public void resetCancelsRemainingReleaseWithoutBlockingQueue() throws Exception {
+        try (Harness h = new Harness()) {
+            CountDownLatch entered = new CountDownLatch(1);
+            CountDownLatch finishWrite = new CountDownLatch(1);
+            CountDownLatch firstDone = new CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicInteger writes = new java.util.concurrent.atomic.AtomicInteger();
+            h.core.attach(p -> {
+                writes.incrementAndGet(); entered.countDown();
+                assertTrue(finishWrite.await(2, TimeUnit.SECONDS));
+                firstDone.countDown();
+            });
+            h.state.set(Capability.FREEZE,true);
+            h.decide(TestPackets.udp(PacketDirection.INBOUND,443,100,0));
+            h.decide(TestPackets.udp(PacketDirection.INBOUND,443,100,1));
+            h.state.set(Capability.FREEZE,false);
+            assertTrue(entered.await(2,TimeUnit.SECONDS));
+            h.core.reset(); h.state.reset();
+            finishWrite.countDown();
+            assertTrue(firstDone.await(2,TimeUnit.SECONDS));
+            // Queue another release after reset; its completion proves the old task has returned.
+            CountDownLatch nextDone = new CountDownLatch(1);
+            h.core.attach(p -> nextDone.countDown());
+            h.state.set(Capability.FREEZE,true);
+            h.decide(TestPackets.udp(PacketDirection.INBOUND,443,100,2));
+            h.state.set(Capability.FREEZE,false);
+            assertTrue(nextDone.await(2,TimeUnit.SECONDS));
+            assertEquals(1,writes.get());
+        }
+    }
+
     @Test public void resetDropsHeldPackets() {
         try (Harness h = new Harness()) {
             h.state.set(Capability.FREEZE, true); h.decide(TestPackets.udp(PacketDirection.INBOUND,443,100,0));
