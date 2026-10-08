@@ -1,40 +1,27 @@
 # GREAT architecture
 
-GREAT is a clean-room application. FOX is a behavioral reference only; no FOX source, DEX, native library, resource or compatibility shim is part of this project.
+## Packet path
 
-## Live packet path
+`Android TUN → PacketPipeline → AF_UNIX packet bridge → official AmneziaWG → network`
 
-Build 2 begins by making GREAT the owner of the packet boundary instead of handing Android's TUN directly to AmneziaWG:
+Inbound packets follow the reverse path and use the same pipeline. Freeze delays delivery to the app, never re-sends inbound packets to the remote server.
 
-`Android TUN -> GREAT PacketPipeline -> AF_UNIX packet bridge -> official amneziawg-go -> network`
+## Ownership and targets
 
-Inbound traffic follows the reverse path and is evaluated by the same pipeline with `PacketDirection.INBOUND`.
+`TargetAppsStore` persists up to 15 user-entered packages and resolves installed UIDs. `GreatVpnService` reloads those UIDs at startup, preference changes and package lifecycle broadcasts. Each reload disables Freeze and installs a fresh `ConnectionOwnerSelector`.
 
-The bridge is intentionally tiny: it implements the upstream `tun.Device` contract over a packet-preserving local socket. Cryptography, handshakes, peer state, obfuscation and UDP transport remain in the pinned upstream AmneziaWG engine.
+The selector checks IPv4 UDP flow ownership with `getConnectionOwnerUid`. Outbound packets use source as local and destination as remote; inbound packets reverse those roles. Known owners are cached for 30 seconds in a 256-entry full-address/protocol/port LRU. Unknown ownership and lookup errors never match. GREAT's process UID is always excluded. Shared Android UIDs are an unavoidable ownership boundary.
 
-## Dependency direction
+No per-app VPN allowlist is imposed: imported routes still control tunnel routing. Only Freeze eligibility uses the editable package list.
 
-UI -> VPN lifecycle -> transport boundary
+## Freeze
 
-UI/overlay -> GreatEngine -> capability controller -> packet pipeline
+`GreatEngine` owns the single state controller, configurable target selector, `FreezeCore`, pipeline and diagnostics. The policy applies the ownership gate before the core's incoming UDP size/port rules. The only capability enum value and floating control are Freeze.
 
-The packet pipeline does not depend on Android UI, AmneziaWG configuration syntax, or a concrete transport.
+A locked FIFO copies eligible packets into RAM with a 10,000-packet global bound and O(1) size/eviction. A timer disables Freeze after the selected duration. Release writes retained packets through the same transport and preserves their queue order. Queue transitions are serialized; network writes never hold the queue lock. Session generations invalidate queued release work across reset/detach. An already in-flight write may complete during stop; transport closure prevents it from reaching a new tunnel.
 
-## Invariants
+The base thresholds are 20/450 with per-packet random additions 0..9/0..49 and strict comparisons. Remote ports 7000..10000 are exempt. Fragmented traffic is passed rather than interpreted as a complete UDP message. No protocol conversion, legacy proxy socket stack or Jitter system is copied from FOX.
 
-1. One process-wide source of truth for capability state (`GreatEngine`).
-2. One packet decision pipeline for both directions.
-3. No capability logic in Activity, Service or overlay code.
-4. Raw `.conf` is validated, encrypted with AES-GCM and stored under `noBackupFilesDir`; the AES key remains in Android Keystore.
-5. Secret material is never logged and raw config buffers are zeroed after use where practical.
-6. AmneziaWG remains upstream; GREAT adds only its own packet-device adapter around the official engine.
-7. The current live policy is still PASS only. HOLD/DELAY/REPLAY remain illegal on the live path until the shared Build 2 scheduler exists.
-8. Internal transport failure is fail-closed: the Android TUN remains claimed while the AWG bridge is stopped, preventing accidental direct fallback.
-9. The Android package is currently arm64-v8a only by design.
+## Storage and security
 
-## Build 2 sequence
-
-1. Prove `TUN -> PacketPipeline(PASS) -> AWG` on-device without breaking connectivity.
-2. Add bounded game-flow classification and caching.
-3. Add the shared scheduler/queue primitives.
-4. Add Freeze, Ghost and Teleport as policies/state machines over that single spine.
+Configs use Android Keystore-backed AES-GCM in app-private storage. Target names, Freeze duration and overlay coordinates use private preferences. Packet buffers are RAM-only. Diagnostics contain counts, never packet bodies or credentials. The upstream AmneziaWG module remains pinned and unchanged.
