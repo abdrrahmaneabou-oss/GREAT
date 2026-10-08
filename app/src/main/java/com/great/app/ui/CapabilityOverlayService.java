@@ -15,15 +15,19 @@ import android.os.Looper;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.View;
 import android.view.WindowManager;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.great.app.config.TriggerSettingsStore;
 import com.great.app.core.Capability;
 import com.great.app.core.GreatEngine;
 
 import java.util.EnumMap;
+import java.util.Locale;
 
 /** Floating capability controls. Packet behavior remains entirely in GreatEngine. */
 public final class CapabilityOverlayService extends Service {
@@ -37,6 +41,7 @@ public final class CapabilityOverlayService extends Service {
     private static final int ACTIVE = 0xffb89aff;
     private static final int INACTIVE = 0xff252a37;
     private static final int TEXT = 0xfff3f4fa;
+    private static final int MUTED = 0xffa2aabc;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final EnumMap<Capability, TextView> buttons = new EnumMap<>(Capability.class);
@@ -51,11 +56,15 @@ public final class CapabilityOverlayService extends Service {
     private LinearLayout root;
     private WindowManager.LayoutParams overlayParams;
     private SharedPreferences prefs;
+    private TriggerSettingsStore triggerSettings;
+    private LinearLayout circleMenu;
+    private TextView circleSizeLabel;
 
     @Override public void onCreate() {
         super.onCreate();
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        triggerSettings = new TriggerSettingsStore(this);
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -79,21 +88,21 @@ public final class CapabilityOverlayService extends Service {
         TextView drag = new TextView(this);
         drag.setText("⋮⋮   GREAT");
         drag.setTextSize(12);
-        drag.setTextColor(0xffa2aabc);
+        drag.setTextColor(MUTED);
         drag.setGravity(Gravity.CENTER);
         drag.setMinHeight(dp(28));
         drag.setContentDescription("Drag controls");
         drag.setOnTouchListener(this::dragOverlay);
-        LinearLayout.LayoutParams dragLp = new LinearLayout.LayoutParams(-1, -2);
-        root.addView(drag, dragLp);
+        root.addView(drag, new LinearLayout.LayoutParams(-1, -2));
 
         addCapability(Capability.FREEZE, "Freeze");
+        addCircleControls();
 
         Point screen = screenSize();
-        int savedX = prefs.getInt(KEY_X, Math.max(0, screen.x - dp(144)));
+        int savedX = prefs.getInt(KEY_X, Math.max(0, screen.x - dp(190)));
         int savedY = prefs.getInt(KEY_Y, dp(140));
         overlayParams = new WindowManager.LayoutParams(
-                dp(132), WindowManager.LayoutParams.WRAP_CONTENT,
+                dp(178), WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
                         WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
@@ -104,6 +113,102 @@ public final class CapabilityOverlayService extends Service {
         windowManager.addView(root, overlayParams);
         root.post(this::clampAndUpdate);
         handler.post(renderTick);
+    }
+
+    private void addCircleControls() {
+        TextView circle = menuButton("CIRCLE");
+        circle.setOnClickListener(v -> {
+            boolean open = circleMenu.getVisibility() == View.VISIBLE;
+            circleMenu.setVisibility(open ? View.GONE : View.VISIBLE);
+            if (!open) updateCircleSizeLabel();
+            root.post(this::clampAndUpdate);
+        });
+        add(root, circle, 6);
+
+        circleMenu = new LinearLayout(this);
+        circleMenu.setOrientation(LinearLayout.VERTICAL);
+        circleMenu.setPadding(dp(8), dp(8), dp(8), dp(8));
+        circleMenu.setBackground(round(0xff1b1f2a, 12));
+        circleMenu.setVisibility(View.GONE);
+
+        circleSizeLabel = new TextView(this);
+        circleSizeLabel.setTextSize(12);
+        circleSizeLabel.setTextColor(TEXT);
+        updateCircleSizeLabel();
+        add(circleMenu, circleSizeLabel, 0);
+
+        SeekBar size = new SeekBar(this);
+        int steps = Math.round((TriggerSettingsStore.MAX_DIAMETER_CM - TriggerSettingsStore.MIN_DIAMETER_CM)
+                / TriggerSettingsStore.STEP_CM);
+        size.setMax(steps);
+        size.setProgress(Math.round((triggerSettings.diameterCm() - TriggerSettingsStore.MIN_DIAMETER_CM)
+                / TriggerSettingsStore.STEP_CM));
+        size.setContentDescription("Circle diameter");
+        size.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (!fromUser) return;
+                float value = TriggerSettingsStore.MIN_DIAMETER_CM + progress * TriggerSettingsStore.STEP_CM;
+                triggerSettings.setDiameterCm(value);
+                updateCircleSizeLabel();
+                sendTriggerAction(FreezeTriggerOverlayService.ACTION_REFRESH);
+            }
+            @Override public void onStartTrackingTouch(SeekBar seekBar) { }
+            @Override public void onStopTrackingTouch(SeekBar seekBar) { }
+        });
+        add(circleMenu, size, 4);
+
+        TextView position = smallAction("ADJUST POSITION");
+        position.setOnClickListener(v -> sendTriggerAction(FreezeTriggerOverlayService.ACTION_EDIT));
+        add(circleMenu, position, 6);
+
+        TextView save = smallAction("SAVE CHANGES");
+        save.setTextColor(Color.BLACK);
+        save.setBackground(round(ACTIVE, 12));
+        save.setOnClickListener(v -> {
+            sendTriggerAction(FreezeTriggerOverlayService.ACTION_LOCK);
+            circleMenu.setVisibility(View.GONE);
+            root.post(this::clampAndUpdate);
+            Toast.makeText(this, "Circle saved", Toast.LENGTH_SHORT).show();
+        });
+        add(circleMenu, save, 6);
+
+        add(root, circleMenu, 6);
+    }
+
+    private void sendTriggerAction(String action) {
+        if (!Settings.canDrawOverlays(this)) return;
+        startService(new Intent(this, FreezeTriggerOverlayService.class).setAction(action));
+    }
+
+    private void updateCircleSizeLabel() {
+        if (circleSizeLabel == null) return;
+        circleSizeLabel.setText(String.format(Locale.US, "SIZE  %.2f cm", triggerSettings.diameterCm()));
+    }
+
+    private TextView menuButton(String label) {
+        TextView v = new TextView(this);
+        v.setText(label);
+        v.setTextSize(13);
+        v.setTextColor(TEXT);
+        v.setGravity(Gravity.CENTER);
+        v.setMinHeight(dp(40));
+        v.setBackground(round(INACTIVE, 14));
+        v.setClickable(true);
+        v.setFocusable(true);
+        return v;
+    }
+
+    private TextView smallAction(String label) {
+        TextView v = new TextView(this);
+        v.setText(label);
+        v.setTextSize(11);
+        v.setTextColor(TEXT);
+        v.setGravity(Gravity.CENTER);
+        v.setMinHeight(dp(38));
+        v.setBackground(round(INACTIVE, 12));
+        v.setClickable(true);
+        v.setFocusable(true);
+        return v;
     }
 
     private void addCapability(Capability capability, String label) {
@@ -123,9 +228,7 @@ public final class CapabilityOverlayService extends Service {
         });
         buttons.put(capability, button);
         render(button, capability);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
-        lp.topMargin = dp(6);
-        root.addView(button, lp);
+        add(root, button, 6);
     }
 
     private boolean dragOverlay(android.view.View view, MotionEvent event) {
@@ -158,8 +261,8 @@ public final class CapabilityOverlayService extends Service {
 
     private void moveTo(int x, int y) {
         Point screen = screenSize();
-        int width = root.getWidth() > 0 ? root.getWidth() : dp(132);
-        int height = root.getHeight() > 0 ? root.getHeight() : dp(100);
+        int width = root.getWidth() > 0 ? root.getWidth() : dp(178);
+        int height = root.getHeight() > 0 ? root.getHeight() : dp(150);
         overlayParams.x = clamp(x, 0, Math.max(0, screen.x - width));
         overlayParams.y = clamp(y, 0, Math.max(0, screen.y - height));
         try { windowManager.updateViewLayout(root, overlayParams); } catch (Exception ignored) { }
@@ -201,6 +304,12 @@ public final class CapabilityOverlayService extends Service {
         return drawable;
     }
 
+    private void add(LinearLayout parent, View child, int topDp) {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.topMargin = dp(topDp);
+        parent.addView(child, lp);
+    }
+
     private int dp(int value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
     }
@@ -216,6 +325,8 @@ public final class CapabilityOverlayService extends Service {
         try { windowManager.removeView(root); } catch (Exception ignored) { }
         root = null;
         overlayParams = null;
+        circleMenu = null;
+        circleSizeLabel = null;
     }
 
     @Override public void onDestroy() {
