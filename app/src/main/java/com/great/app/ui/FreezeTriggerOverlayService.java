@@ -73,7 +73,10 @@ public final class FreezeTriggerOverlayService extends Service {
             engine.ensureBound(this, engineListener);
             applyEngineState(engine.ready());
         } else if (ACTION_REFRESH.equals(action)) {
-            ensureCircle();
+            if (circle == null) {
+                stopSelf();
+                return START_NOT_STICKY;
+            }
             refreshGeometry();
             if (!editMode) {
                 engine.ensureBound(this, engineListener);
