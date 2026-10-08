@@ -31,8 +31,8 @@ public final class FreezeCore implements AutoCloseable {
 
     // Manual Freeze is controlled only by CapabilityController / the visible Freeze button.
     private boolean manualEnabled;
-    // Circle hold is a second independent source controlled only by the Shizuku touch trigger.
-    private boolean circleHold;
+    // The visual monitor is a second independent source and never changes the manual button state.
+    private boolean visualMonitorHold;
     private boolean closed;
     private long generation;
 
@@ -104,14 +104,14 @@ public final class FreezeCore implements AutoCloseable {
     }
 
     /**
-     * Circle source only. It never changes CapabilityController, so the manual Freeze button keeps
-     * its own state and timer. A circle DOWN sets this true; lifting the tracked finger sets it false.
+     * Visual-monitor source only. FIRED sets this true; returning to the ARMED/green state sets it
+     * false. It never changes CapabilityController, so manual Freeze keeps its own state and timer.
      */
     public void setHoldTrigger(boolean active) {
         synchronized (lock) {
-            if (closed || circleHold == active) return;
+            if (closed || visualMonitorHold == active) return;
             boolean wasEffective = effectiveLocked();
-            circleHold = active;
+            visualMonitorHold = active;
             boolean nowEffective = effectiveLocked();
             if (!wasEffective && nowEffective) {
                 buffer.clear();
@@ -122,7 +122,7 @@ public final class FreezeCore implements AutoCloseable {
     }
 
     public boolean holdTriggerActive() {
-        synchronized (lock) { return circleHold; }
+        synchronized (lock) { return visualMonitorHold; }
     }
 
     public boolean effectiveActive() {
@@ -130,7 +130,7 @@ public final class FreezeCore implements AutoCloseable {
     }
 
     private boolean effectiveLocked() {
-        return manualEnabled || circleHold;
+        return manualEnabled || visualMonitorHold;
     }
 
     private void releaseBufferedLocked() {
@@ -176,7 +176,7 @@ public final class FreezeCore implements AutoCloseable {
     public void reset() {
         synchronized (lock) {
             manualEnabled = false;
-            circleHold = false;
+            visualMonitorHold = false;
             generation++;
             if (timeout != null) timeout.cancel(false);
             timeout = null;
