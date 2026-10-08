@@ -28,7 +28,11 @@ public final class FreezeCore implements AutoCloseable {
     private OutputSink sink;
     private ScheduledFuture<?> timeout;
     private int durationSeconds = DEFAULT_DURATION_SECONDS;
-    private boolean enabled;
+
+    // Manual Freeze is controlled only by CapabilityController / the visible Freeze button.
+    private boolean manualEnabled;
+    // Circle hold is a second independent source controlled only by the Shizuku touch trigger.
+    private boolean circleHold;
     private boolean closed;
     private long generation;
 
@@ -55,8 +59,7 @@ public final class FreezeCore implements AutoCloseable {
         int remotePort = m.sourcePort();
         if (remotePort >= 7000 && remotePort <= 10000) return PacketDecision.PASS;
         synchronized (lock) {
-            if (closed || !enabled || !state.enabled(Capability.FREEZE)
-                    || !shouldHold(udpLength - 8)) return PacketDecision.PASS;
+            if (closed || !effectiveLocked() || !shouldHold(udpLength - 8)) return PacketDecision.PASS;
             if (buffer.size() == CAPACITY) {
                 buffer.removeFirst();
                 diagnostics.schedulerRejected();
@@ -80,34 +83,62 @@ public final class FreezeCore implements AutoCloseable {
         if (capability != Capability.FREEZE) return;
         synchronized (lock) {
             if (closed) return;
-            enabled = value;
+            boolean wasEffective = effectiveLocked();
+            manualEnabled = value;
+
             if (timeout != null) timeout.cancel(false);
             timeout = null;
             if (value) {
-                buffer.clear();
                 long activation = controller.snapshot().revision();
                 timeout = timers.schedule(() -> controller.setIfRevision(
                         Capability.FREEZE, false, activation), durationSeconds, TimeUnit.SECONDS);
-            } else if (!buffer.isEmpty()) {
-                ArrayList<PacketEnvelope> all = new ArrayList<>(buffer);
+            }
+
+            boolean nowEffective = effectiveLocked();
+            if (!wasEffective && nowEffective) {
                 buffer.clear();
-                long session = generation;
-                releases.execute(() -> release(all, session));
+            } else if (wasEffective && !nowEffective) {
+                releaseBufferedLocked();
             }
         }
     }
 
     /**
-     * Compatibility hook for the unfinished circle backend. It intentionally does not alter the
-     * proven manual Freeze state. Circle-driven Freeze will be re-enabled only when the passive
-     * touch source is available and tested on-device.
+     * Circle source only. It never changes CapabilityController, so the manual Freeze button keeps
+     * its own state and timer. A circle DOWN sets this true; lifting the tracked finger sets it false.
      */
-    public void setHoldTrigger(boolean active) { }
+    public void setHoldTrigger(boolean active) {
+        synchronized (lock) {
+            if (closed || circleHold == active) return;
+            boolean wasEffective = effectiveLocked();
+            circleHold = active;
+            boolean nowEffective = effectiveLocked();
+            if (!wasEffective && nowEffective) {
+                buffer.clear();
+            } else if (wasEffective && !nowEffective) {
+                releaseBufferedLocked();
+            }
+        }
+    }
 
-    public boolean holdTriggerActive() { return false; }
+    public boolean holdTriggerActive() {
+        synchronized (lock) { return circleHold; }
+    }
 
     public boolean effectiveActive() {
-        synchronized (lock) { return enabled; }
+        synchronized (lock) { return effectiveLocked(); }
+    }
+
+    private boolean effectiveLocked() {
+        return manualEnabled || circleHold;
+    }
+
+    private void releaseBufferedLocked() {
+        if (buffer.isEmpty()) return;
+        ArrayList<PacketEnvelope> all = new ArrayList<>(buffer);
+        buffer.clear();
+        long session = generation;
+        releases.execute(() -> release(all, session));
     }
 
     private void release(ArrayList<PacketEnvelope> all, long session) {
@@ -144,7 +175,8 @@ public final class FreezeCore implements AutoCloseable {
 
     public void reset() {
         synchronized (lock) {
-            enabled = false;
+            manualEnabled = false;
+            circleHold = false;
             generation++;
             if (timeout != null) timeout.cancel(false);
             timeout = null;
