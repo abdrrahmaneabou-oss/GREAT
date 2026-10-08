@@ -15,6 +15,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.Toast;
 
 import com.great.app.config.TriggerSettingsStore;
 import com.great.app.shizuku.ShizukuTouchEngine;
@@ -78,7 +79,10 @@ public final class FreezeTriggerOverlayService extends Service {
     }
 
     private void bindTouchDiagnostics() {
-        touchEngine.ensureBound(this, (ready, status) -> { });
+        touchEngine.ensureBound(this, (ready, status) -> {
+            String text = status == null ? (ready ? "Shizuku touch service ready" : "Shizuku touch service unavailable") : status;
+            Toast.makeText(this, text, Toast.LENGTH_LONG).show();
+        });
     }
 
     private void ensureCircle() {
