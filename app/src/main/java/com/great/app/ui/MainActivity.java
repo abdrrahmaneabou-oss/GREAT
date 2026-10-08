@@ -2,6 +2,7 @@ package com.great.app.ui;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -11,11 +12,11 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
-import android.widget.LinearLayout;
 import android.widget.EditText;
-import android.text.InputType;
+import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -24,21 +25,24 @@ import com.great.app.config.AwgConfigParser;
 import com.great.app.config.CapabilitySettingsStore;
 import com.great.app.config.SecureConfigStore;
 import com.great.app.config.TargetAppsStore;
-import com.great.app.core.TargetPackages;
-import com.great.app.core.EngineDiagnostics;
 import com.great.app.core.Capability;
+import com.great.app.core.EngineDiagnostics;
 import com.great.app.core.FreezeCore;
 import com.great.app.core.GreatEngine;
+import com.great.app.core.TargetPackages;
 import com.great.app.vpn.GreatVpnService;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.Arrays;
 
+import rikka.shizuku.Shizuku;
+
 /** Small control surface. Packet logic remains in GreatEngine and the VPN transport. */
 public final class MainActivity extends Activity {
     private static final int PICK_CONFIG = 1001;
     private static final int VPN_PERMISSION = 1002;
+    private static final int SHIZUKU_PERMISSION = 1003;
     private static final int BG = 0xff0c0e14, SURFACE = 0xff151822, TEXT = 0xfff2f3fa,
             MUTED = 0xffa2aabc, ACCENT = 0xffb89aff;
 
@@ -50,10 +54,30 @@ public final class MainActivity extends Activity {
         }
     };
 
+    private final Shizuku.OnBinderReceivedListener shizukuBinderReceived = () -> {
+        refreshShizukuState();
+    };
+
+    private final Shizuku.OnBinderDeadListener shizukuBinderDead = () -> {
+        refreshShizukuState();
+    };
+
+    private final Shizuku.OnRequestPermissionResultListener shizukuPermissionResult = (requestCode, grantResult) -> {
+        if (requestCode != SHIZUKU_PERMISSION) return;
+        refreshShizukuState();
+        if (grantResult == PackageManager.PERMISSION_GRANTED) {
+            toast("Shizuku connected");
+        } else {
+            toast("Shizuku permission denied");
+        }
+    };
+
     private TextView configState;
     private TextView start;
     private TextView stats;
     private TextView freezeDuration;
+    private TextView shizukuState;
+    private TextView shizukuConnect;
     private TargetAppsStore targetStore;
     private EditText packageInput;
     private TextView targetHeading;
@@ -66,8 +90,14 @@ public final class MainActivity extends Activity {
         tuningStore = new CapabilitySettingsStore(this);
         targetStore = new TargetAppsStore(this);
         applySavedTuning();
+
+        Shizuku.addBinderReceivedListenerSticky(shizukuBinderReceived);
+        Shizuku.addBinderDeadListener(shizukuBinderDead);
+        Shizuku.addRequestPermissionResultListener(shizukuPermissionResult);
+
         setContentView(content());
         refresh();
+        refreshShizukuState();
         handler.post(statsTick);
     }
 
@@ -77,10 +107,14 @@ public final class MainActivity extends Activity {
             overlayPending = false;
             startOverlay();
         }
+        refreshShizukuState();
     }
 
     @Override protected void onDestroy() {
         handler.removeCallbacks(statsTick);
+        Shizuku.removeBinderReceivedListener(shizukuBinderReceived);
+        Shizuku.removeBinderDeadListener(shizukuBinderDead);
+        Shizuku.removeRequestPermissionResultListener(shizukuPermissionResult);
         super.onDestroy();
     }
 
@@ -117,6 +151,7 @@ public final class MainActivity extends Activity {
         add(card, controls, 10);
         add(root, card, 26);
 
+        add(root, shizukuCard(), 14);
         add(root, targetCard(), 14);
 
         LinearLayout tuningCard = column();
@@ -144,6 +179,81 @@ public final class MainActivity extends Activity {
         scroll.setFillViewport(true);
         scroll.addView(root, new ScrollView.LayoutParams(-1, -2));
         return scroll;
+    }
+
+    private View shizukuCard() {
+        LinearLayout card = column();
+        card.setPadding(dp(18), dp(18), dp(18), dp(18));
+        card.setBackground(round(SURFACE, 20));
+
+        add(card, text("SHIZUKU", 11, ACCENT, true), 0);
+        add(card, text("Connect GREAT to Shizuku so privileged features can use its binder later.",
+                12, MUTED, false), 8);
+
+        shizukuState = text("Checking Shizuku…", 14, TEXT, false);
+        add(card, shizukuState, 12);
+
+        shizukuConnect = button("CONNECT SHIZUKU", true);
+        shizukuConnect.setOnClickListener(v -> requestShizuku());
+        add(card, shizukuConnect, 14);
+        return card;
+    }
+
+    private void requestShizuku() {
+        if (!Shizuku.pingBinder()) {
+            refreshShizukuState();
+            toast("Start Shizuku first, then try again");
+            return;
+        }
+
+        int permission;
+        try {
+            permission = Shizuku.checkSelfPermission();
+        } catch (Throwable e) {
+            refreshShizukuState();
+            toast("Shizuku is not available");
+            return;
+        }
+
+        if (permission == PackageManager.PERMISSION_GRANTED) {
+            refreshShizukuState();
+            toast("Shizuku already connected");
+            return;
+        }
+
+        if (Shizuku.shouldShowRequestPermissionRationale()) {
+            toast("Shizuku permission was denied. Allow GREAT from Shizuku permissions.");
+            return;
+        }
+
+        Shizuku.requestPermission(SHIZUKU_PERMISSION);
+    }
+
+    private void refreshShizukuState() {
+        if (shizukuState == null || shizukuConnect == null) return;
+
+        if (!Shizuku.pingBinder()) {
+            shizukuState.setText("Disconnected • Shizuku service unavailable");
+            shizukuConnect.setText("CONNECT SHIZUKU");
+            shizukuConnect.setAlpha(1f);
+            return;
+        }
+
+        try {
+            if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+                shizukuState.setText("Connected • Permission granted");
+                shizukuConnect.setText("SHIZUKU CONNECTED");
+                shizukuConnect.setAlpha(.75f);
+            } else {
+                shizukuState.setText("Ready • Permission required");
+                shizukuConnect.setText("CONNECT SHIZUKU");
+                shizukuConnect.setAlpha(1f);
+            }
+        } catch (Throwable e) {
+            shizukuState.setText("Disconnected • Shizuku unavailable");
+            shizukuConnect.setText("CONNECT SHIZUKU");
+            shizukuConnect.setAlpha(1f);
+        }
     }
 
     private TextView durationRow(LinearLayout parent) {
