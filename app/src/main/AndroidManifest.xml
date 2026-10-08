@@ -49,5 +49,9 @@
         <service
             android:name=".ui.CapabilityOverlayService"
             android:exported="false" />
+
+        <service
+            android:name=".ui.FreezeTriggerOverlayService"
+            android:exported="false" />
     </application>
 </manifest>
