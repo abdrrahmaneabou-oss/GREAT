@@ -29,6 +29,7 @@ public final class FreezeCore implements AutoCloseable {
     private ScheduledFuture<?> timeout;
     private int durationSeconds = DEFAULT_DURATION_SECONDS;
     private boolean enabled;
+    private boolean holdTrigger;
     private boolean closed;
     private long generation;
 
@@ -84,8 +85,11 @@ public final class FreezeCore implements AutoCloseable {
             timeout = null;
             if (value) {
                 buffer.clear();
-                long activation = controller.snapshot().revision();
-                timeout = timers.schedule(() -> controller.setIfRevision(Capability.FREEZE, false, activation), durationSeconds, TimeUnit.SECONDS);
+                if (!holdTrigger) {
+                    long activation = controller.snapshot().revision();
+                    timeout = timers.schedule(() -> controller.setIfRevision(
+                            Capability.FREEZE, false, activation), durationSeconds, TimeUnit.SECONDS);
+                }
             } else if (!buffer.isEmpty()) {
                 ArrayList<PacketEnvelope> all = new ArrayList<>(buffer);
                 buffer.clear();
@@ -93,6 +97,26 @@ public final class FreezeCore implements AutoCloseable {
                 releases.execute(() -> release(all, session));
             }
         }
+    }
+
+    /**
+     * Hold-mode Freeze is tied directly to the user's trigger finger. Auto-release is suspended
+     * while the trigger is held, and lifting/canceling the same gesture releases immediately.
+     */
+    public void setHoldTrigger(boolean active) {
+        synchronized (lock) {
+            if (closed) return;
+            holdTrigger = active;
+            if (active && timeout != null) {
+                timeout.cancel(false);
+                timeout = null;
+            }
+        }
+        controller.set(Capability.FREEZE, active);
+    }
+
+    public boolean holdTriggerActive() {
+        synchronized (lock) { return holdTrigger; }
     }
 
     private void release(ArrayList<PacketEnvelope> all, long session) {
@@ -125,6 +149,7 @@ public final class FreezeCore implements AutoCloseable {
     public void reset() {
         synchronized (lock) {
             enabled = false;
+            holdTrigger = false;
             generation++;
             if (timeout != null) timeout.cancel(false);
             timeout = null;
