@@ -17,7 +17,6 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
-import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -25,39 +24,36 @@ import com.great.app.config.MonitorSettingsStore;
 import com.great.app.core.Capability;
 import com.great.app.core.GreatEngine;
 
-import java.util.EnumMap;
-
-/** Floating Freeze control plus PixelTrigger-style visual monitor controls. */
+/** Two independent floating controls: robot for visual monitoring, snowflake for manual Freeze. */
 public final class CapabilityOverlayService extends Service {
     public static final String ACTION_SHOW = "com.great.app.action.SHOW_CAPABILITIES";
     public static final String ACTION_HIDE = "com.great.app.action.HIDE_CAPABILITIES";
 
     private static final String PREFS = "great_overlay";
-    private static final String KEY_X = "x";
-    private static final String KEY_Y = "y";
-    private static final int BG = 0xee12151d;
-    private static final int ACTIVE = 0xffb89aff;
-    private static final int INACTIVE = 0xff252a37;
-    private static final int TEXT = 0xfff3f4fa;
-    private static final int MUTED = 0xffa2aabc;
+    private static final String KEY_ROBOT_X = "robot_x";
+    private static final String KEY_ROBOT_Y = "robot_y";
+    private static final String KEY_FREEZE_X = "freeze_x";
+    private static final String KEY_FREEZE_Y = "freeze_y";
+    private static final int ACTIVE = 0xffef5350;
+    private static final int INACTIVE = 0xff7b808c;
+    private static final int SIZE_DP = 58;
+    private static final long LONG_PRESS_MS = 300L;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private final EnumMap<Capability, TextView> buttons = new EnumMap<>(Capability.class);
     private final Runnable renderTick = new Runnable() {
         @Override public void run() {
-            renderAll();
-            renderMonitorToggle();
-            if (root != null) handler.postDelayed(this, 250);
+            renderStates();
+            if (robotView != null || freezeView != null) handler.postDelayed(this, 150);
         }
     };
 
     private WindowManager windowManager;
-    private LinearLayout root;
-    private WindowManager.LayoutParams overlayParams;
     private SharedPreferences prefs;
     private MonitorSettingsStore monitorSettings;
-    private LinearLayout monitorMenu;
-    private TextView monitorToggle;
+    private TextView robotView;
+    private TextView freezeView;
+    private WindowManager.LayoutParams robotParams;
+    private WindowManager.LayoutParams freezeParams;
 
     @Override public void onCreate() {
         super.onCreate();
@@ -78,211 +74,218 @@ public final class CapabilityOverlayService extends Service {
     }
 
     private void showOverlay() {
-        if (root != null) return;
-        root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(8), dp(8), dp(8), dp(8));
-        root.setBackground(round(BG, 18));
-
-        TextView drag = new TextView(this);
-        drag.setText("⋮⋮   GREAT");
-        drag.setTextSize(12);
-        drag.setTextColor(MUTED);
-        drag.setGravity(Gravity.CENTER);
-        drag.setMinHeight(dp(28));
-        drag.setOnTouchListener(this::dragOverlay);
-        root.addView(drag, new LinearLayout.LayoutParams(-1, -2));
-
-        addCapability(Capability.FREEZE, "Freeze");
-        addMonitorControls();
-
+        if (robotView != null || freezeView != null) return;
         Point screen = screenSize();
-        overlayParams = new WindowManager.LayoutParams(
-                dp(178), WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                PixelFormat.TRANSLUCENT);
-        overlayParams.gravity = Gravity.TOP | Gravity.START;
-        overlayParams.x = prefs.getInt(KEY_X, Math.max(0, screen.x - dp(190)));
-        overlayParams.y = prefs.getInt(KEY_Y, dp(140));
-        windowManager.addView(root, overlayParams);
-        root.post(this::clampAndUpdate);
+        int size = dp(SIZE_DP);
+        int x = Math.max(0, screen.x - size - dp(18));
+
+        freezeView = circle("❄️");
+        freezeParams = params(
+                prefs.getInt(KEY_FREEZE_X, x),
+                prefs.getInt(KEY_FREEZE_Y, dp(230)), size);
+        freezeView.setOnTouchListener(new CircleTouch(false));
+        windowManager.addView(freezeView, freezeParams);
+
+        robotView = circle("🤖");
+        robotParams = params(
+                prefs.getInt(KEY_ROBOT_X, x),
+                prefs.getInt(KEY_ROBOT_Y, dp(160)), size);
+        robotView.setOnTouchListener(new CircleTouch(true));
+        // Added after the snowflake so the robot window is above it when both occupy the same spot.
+        windowManager.addView(robotView, robotParams);
+
+        clampAndUpdate(robotView, robotParams, KEY_ROBOT_X, KEY_ROBOT_Y, false);
+        clampAndUpdate(freezeView, freezeParams, KEY_FREEZE_X, KEY_FREEZE_Y, false);
+        renderStates();
         handler.post(renderTick);
     }
 
-    private void addMonitorControls() {
-        TextView monitor = menuButton("MONITOR");
-        monitor.setOnClickListener(v -> {
-            boolean open = monitorMenu.getVisibility() == View.VISIBLE;
-            monitorMenu.setVisibility(open ? View.GONE : View.VISIBLE);
-            renderMonitorToggle();
-            root.post(this::clampAndUpdate);
-        });
-        add(root, monitor, 6);
-
-        monitorMenu = new LinearLayout(this);
-        monitorMenu.setOrientation(LinearLayout.VERTICAL);
-        monitorMenu.setPadding(dp(8), dp(8), dp(8), dp(8));
-        monitorMenu.setBackground(round(0xff1b1f2a, 12));
-        monitorMenu.setVisibility(View.GONE);
-
-        monitorToggle = smallAction("");
-        monitorToggle.setOnClickListener(v -> toggleMonitor());
-        add(monitorMenu, monitorToggle, 0);
-
-        TextView position = smallAction("ADJUST POSITION");
-        position.setOnClickListener(v -> {
-            if (!FreezeMonitorService.isRunning()) {
-                Toast.makeText(this, "Start MONITOR first", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            startService(new Intent(this, FreezeMonitorService.class).setAction(FreezeMonitorService.ACTION_EDIT));
-        });
-        add(monitorMenu, position, 6);
-
-        TextView save = smallAction("SAVE / ARM");
-        save.setTextColor(Color.BLACK);
-        save.setBackground(round(ACTIVE, 12));
-        save.setOnClickListener(v -> {
-            if (FreezeMonitorService.isRunning()) {
-                startService(new Intent(this, FreezeMonitorService.class).setAction(FreezeMonitorService.ACTION_LOCK));
-                Toast.makeText(this, "Monitor armed", Toast.LENGTH_SHORT).show();
-            }
-            monitorMenu.setVisibility(View.GONE);
-            root.post(this::clampAndUpdate);
-        });
-        add(monitorMenu, save, 6);
-        add(root, monitorMenu, 6);
-        renderMonitorToggle();
+    private TextView circle(String emoji) {
+        TextView view = new TextView(this);
+        view.setText(emoji);
+        view.setTextSize(27);
+        view.setGravity(Gravity.CENTER);
+        view.setTextColor(Color.WHITE);
+        view.setIncludeFontPadding(false);
+        view.setClickable(true);
+        view.setFocusable(false);
+        return view;
     }
 
-    private void toggleMonitor() {
-        if (FreezeMonitorService.isRunning()) {
-            monitorSettings.setEnabled(false);
-            startService(new Intent(this, FreezeMonitorService.class).setAction(FreezeMonitorService.ACTION_STOP));
-            Toast.makeText(this, "Monitor stopped", Toast.LENGTH_SHORT).show();
-        } else {
-            monitorSettings.setEnabled(true);
+    private WindowManager.LayoutParams params(int x, int y, int size) {
+        WindowManager.LayoutParams p = new WindowManager.LayoutParams(
+                size, size,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL |
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT);
+        p.gravity = Gravity.TOP | Gravity.START;
+        p.x = x;
+        p.y = y;
+        return p;
+    }
+
+    private void renderStates() {
+        if (robotView != null) {
+            boolean active = FreezeMonitorService.isMonitoringActive();
+            robotView.setBackground(circleBg(active ? ACTIVE : INACTIVE));
+        }
+        if (freezeView != null) {
+            boolean active = GreatEngine.instance().capabilities().snapshot().enabled(Capability.FREEZE);
+            freezeView.setBackground(circleBg(active ? ACTIVE : INACTIVE));
+        }
+    }
+
+    private void onRobotClick() {
+        if (FreezeMonitorService.isEditing()) {
+            startService(new Intent(this, FreezeMonitorService.class).setAction(FreezeMonitorService.ACTION_LOCK));
+            monitorSettings.setMonitoringEnabled(true);
+            Toast.makeText(this, "Monitor position saved", Toast.LENGTH_SHORT).show();
+            renderStates();
+            return;
+        }
+        if (!FreezeMonitorService.isRunning()) {
             Intent activity = new Intent(this, GreatMainActivity.class)
                     .setAction(GreatMainActivity.ACTION_REQUEST_MONITOR_CAPTURE)
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
             startActivity(activity);
+            return;
         }
-        renderMonitorToggle();
+        boolean next = !FreezeMonitorService.isMonitoringActive();
+        monitorSettings.setMonitoringEnabled(next);
+        startService(new Intent(this, FreezeMonitorService.class)
+                .setAction(next ? FreezeMonitorService.ACTION_MONITORING_ON
+                        : FreezeMonitorService.ACTION_MONITORING_OFF));
+        renderStates();
     }
 
-    private void renderMonitorToggle() {
-        if (monitorToggle == null) return;
-        boolean running = FreezeMonitorService.isRunning();
-        monitorToggle.setText(running ? "MONITOR  ON" : "MONITOR  OFF");
-        monitorToggle.setTextColor(running ? Color.BLACK : TEXT);
-        monitorToggle.setBackground(round(running ? ACTIVE : INACTIVE, 12));
+    private void onRobotLongPress() {
+        if (FreezeMonitorService.isRunning()) {
+            startService(new Intent(this, FreezeMonitorService.class).setAction(FreezeMonitorService.ACTION_EDIT));
+            Toast.makeText(this, "Move the tiny monitor circle, then tap 🤖 to save", Toast.LENGTH_LONG).show();
+        } else {
+            Intent activity = new Intent(this, GreatMainActivity.class)
+                    .setAction(GreatMainActivity.ACTION_REQUEST_MONITOR_EDIT)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            startActivity(activity);
+        }
+        renderStates();
     }
 
-    private void addCapability(Capability capability, String label) {
-        TextView button = new TextView(this);
-        button.setText(label);
-        button.setTextSize(14);
-        button.setGravity(Gravity.CENTER);
-        button.setMinHeight(dp(44));
-        button.setPadding(dp(10), dp(8), dp(10), dp(8));
-        button.setOnClickListener(v -> {
-            GreatEngine engine = GreatEngine.instance();
-            if (!engine.capabilities().snapshot().enabled(capability) && engine.targetCount() == 0) {
-                Toast.makeText(this, "Start GREAT with an installed target application first", Toast.LENGTH_LONG).show();
-                return;
-            }
-            engine.capabilities().toggle(capability);
-        });
-        buttons.put(capability, button);
-        render(button, capability);
-        add(root, button, 6);
+    private void onFreezeClick() {
+        GreatEngine engine = GreatEngine.instance();
+        boolean enabled = engine.capabilities().snapshot().enabled(Capability.FREEZE);
+        if (!enabled && engine.targetCount() == 0) {
+            Toast.makeText(this, "Add a target application and start the VPN first", Toast.LENGTH_LONG).show();
+            return;
+        }
+        engine.capabilities().toggle(Capability.FREEZE);
+        renderStates();
     }
 
-    private boolean dragOverlay(View view, MotionEvent event) {
-        if (overlayParams == null || root == null) return false;
-        DragState state = (DragState) view.getTag();
-        switch (event.getActionMasked()) {
-            case MotionEvent.ACTION_DOWN -> {
-                state = new DragState(overlayParams.x, overlayParams.y, event.getRawX(), event.getRawY());
-                view.setTag(state);
-                return true;
-            }
-            case MotionEvent.ACTION_MOVE -> {
-                if (state == null) return false;
-                moveTo(state.startX + Math.round(event.getRawX() - state.touchX),
-                        state.startY + Math.round(event.getRawY() - state.touchY));
-                return true;
-            }
-            case MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                if (state != null) {
-                    clampAndUpdate();
-                    prefs.edit().putInt(KEY_X, overlayParams.x).putInt(KEY_Y, overlayParams.y).apply();
+    private GradientDrawable circleBg(int color) {
+        GradientDrawable d = new GradientDrawable();
+        d.setShape(GradientDrawable.OVAL);
+        d.setColor(color);
+        d.setStroke(dp(1), 0x99ffffff);
+        return d;
+    }
+
+    private final class CircleTouch implements View.OnTouchListener {
+        private final boolean robot;
+        private float downRawX, downRawY;
+        private int startX, startY;
+        private boolean dragging;
+        private boolean longPressed;
+        private Runnable longPress;
+
+        CircleTouch(boolean robot) { this.robot = robot; }
+
+        @Override public boolean onTouch(View view, MotionEvent event) {
+            WindowManager.LayoutParams p = robot ? robotParams : freezeParams;
+            if (p == null) return false;
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.getRawX();
+                    downRawY = event.getRawY();
+                    startX = p.x;
+                    startY = p.y;
+                    dragging = false;
+                    longPressed = false;
+                    if (robot) {
+                        longPress = () -> {
+                            if (!dragging) {
+                                longPressed = true;
+                                onRobotLongPress();
+                            }
+                        };
+                        handler.postDelayed(longPress, LONG_PRESS_MS);
+                    }
+                    return true;
                 }
-                view.setTag(null);
-                return true;
+                case MotionEvent.ACTION_MOVE -> {
+                    float dx = event.getRawX() - downRawX;
+                    float dy = event.getRawY() - downRawY;
+                    if (!dragging && Math.hypot(dx, dy) > dp(8)) {
+                        dragging = true;
+                        cancelLongPress();
+                    }
+                    if (dragging) {
+                        move(view, p, startX + Math.round(dx), startY + Math.round(dy));
+                    }
+                    return true;
+                }
+                case MotionEvent.ACTION_UP -> {
+                    cancelLongPress();
+                    if (dragging) {
+                        if (robot) savePosition(p, KEY_ROBOT_X, KEY_ROBOT_Y);
+                        else savePosition(p, KEY_FREEZE_X, KEY_FREEZE_Y);
+                    } else if (!longPressed) {
+                        if (robot) onRobotClick(); else onFreezeClick();
+                    }
+                    return true;
+                }
+                case MotionEvent.ACTION_CANCEL -> {
+                    cancelLongPress();
+                    return true;
+                }
+                default -> { return true; }
             }
-            default -> { return false; }
+        }
+
+        private void cancelLongPress() {
+            if (longPress != null) handler.removeCallbacks(longPress);
+            longPress = null;
         }
     }
 
-    private void moveTo(int x, int y) {
+    private void move(View view, WindowManager.LayoutParams p, int x, int y) {
         Point screen = screenSize();
-        int width = root.getWidth() > 0 ? root.getWidth() : dp(178);
-        int height = root.getHeight() > 0 ? root.getHeight() : dp(150);
-        overlayParams.x = clamp(x, 0, Math.max(0, screen.x - width));
-        overlayParams.y = clamp(y, 0, Math.max(0, screen.y - height));
-        try { windowManager.updateViewLayout(root, overlayParams); } catch (Throwable ignored) { }
+        p.x = clamp(x, 0, Math.max(0, screen.x - p.width));
+        p.y = clamp(y, 0, Math.max(0, screen.y - p.height));
+        try { windowManager.updateViewLayout(view, p); } catch (Throwable ignored) { }
     }
 
-    private void clampAndUpdate() {
-        if (root != null && overlayParams != null) moveTo(overlayParams.x, overlayParams.y);
+    private void savePosition(WindowManager.LayoutParams p, String keyX, String keyY) {
+        prefs.edit().putInt(keyX, p.x).putInt(keyY, p.y).apply();
+    }
+
+    private void clampAndUpdate(View view, WindowManager.LayoutParams p,
+                                String keyX, String keyY, boolean save) {
+        if (view == null || p == null) return;
+        move(view, p, p.x, p.y);
+        if (save) savePosition(p, keyX, keyY);
     }
 
     private Point screenSize() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Rect bounds = windowManager.getCurrentWindowMetrics().getBounds();
+            Rect bounds = windowManager.getMaximumWindowMetrics().getBounds();
             return new Point(bounds.width(), bounds.height());
         }
         Point point = new Point();
-        windowManager.getDefaultDisplay().getSize(point);
+        windowManager.getDefaultDisplay().getRealSize(point);
         return point;
-    }
-
-    private void renderAll() {
-        for (Capability capability : Capability.values()) {
-            TextView button = buttons.get(capability);
-            if (button != null) render(button, capability);
-        }
-    }
-
-    private void render(TextView button, Capability capability) {
-        boolean enabled = GreatEngine.instance().capabilities().snapshot().enabled(capability);
-        button.setTextColor(enabled ? Color.BLACK : TEXT);
-        button.setBackground(round(enabled ? ACTIVE : INACTIVE, 14));
-        button.setAlpha(enabled ? 1f : .92f);
-    }
-
-    private TextView menuButton(String label) {
-        TextView v = new TextView(this);
-        v.setText(label); v.setTextSize(13); v.setTextColor(TEXT); v.setGravity(Gravity.CENTER);
-        v.setMinHeight(dp(40)); v.setBackground(round(INACTIVE, 14)); v.setClickable(true); v.setFocusable(true);
-        return v;
-    }
-
-    private TextView smallAction(String label) {
-        TextView v = new TextView(this);
-        v.setText(label); v.setTextSize(11); v.setTextColor(TEXT); v.setGravity(Gravity.CENTER);
-        v.setMinHeight(dp(38)); v.setBackground(round(INACTIVE, 12)); v.setClickable(true); v.setFocusable(true);
-        return v;
-    }
-
-    private GradientDrawable round(int color, int radiusDp) {
-        GradientDrawable d = new GradientDrawable(); d.setColor(color); d.setCornerRadius(dp(radiusDp)); return d;
-    }
-
-    private void add(LinearLayout parent, View child, int topDp) {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2); lp.topMargin = dp(topDp); parent.addView(child, lp);
     }
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
@@ -290,19 +293,14 @@ public final class CapabilityOverlayService extends Service {
 
     private void removeOverlay() {
         handler.removeCallbacks(renderTick);
-        buttons.clear();
-        if (root != null) try { windowManager.removeView(root); } catch (Throwable ignored) { }
-        root = null; overlayParams = null; monitorMenu = null; monitorToggle = null;
+        if (robotView != null) try { windowManager.removeView(robotView); } catch (Throwable ignored) { }
+        if (freezeView != null) try { windowManager.removeView(freezeView); } catch (Throwable ignored) { }
+        robotView = null;
+        freezeView = null;
+        robotParams = null;
+        freezeParams = null;
     }
 
     @Override public void onDestroy() { removeOverlay(); super.onDestroy(); }
     @Override public IBinder onBind(Intent intent) { return null; }
-
-    private static final class DragState {
-        final int startX, startY;
-        final float touchX, touchY;
-        DragState(int startX, int startY, float touchX, float touchY) {
-            this.startX = startX; this.startY = startY; this.touchX = touchX; this.touchY = touchY;
-        }
-    }
 }
