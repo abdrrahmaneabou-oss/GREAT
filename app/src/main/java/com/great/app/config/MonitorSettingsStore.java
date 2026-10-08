@@ -3,10 +3,11 @@ package com.great.app.config;
 import android.content.Context;
 import android.content.SharedPreferences;
 
-/** Persistent position and enable state for the tiny PixelTrigger-style visual monitor. */
+/** Persistent position, visibility and functional state for the tiny visual monitor. */
 public final class MonitorSettingsStore {
     private static final String PREFS = "great_visual_monitor";
     private static final String KEY_ENABLED = "enabled";
+    private static final String KEY_MONITORING_ENABLED = "monitoring_enabled";
     private static final String KEY_CENTER_X = "center_x_fraction";
     private static final String KEY_CENTER_Y = "center_y_fraction";
 
@@ -16,12 +17,22 @@ public final class MonitorSettingsStore {
         prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
+    /** Whether the monitor circle/service itself is enabled and visible. */
     public boolean enabled() {
         return prefs.getBoolean(KEY_ENABLED, false);
     }
 
     public void setEnabled(boolean enabled) {
         prefs.edit().putBoolean(KEY_ENABLED, enabled).apply();
+    }
+
+    /** Whether visible circle is actively sampling, arming and firing Freeze. */
+    public boolean monitoringEnabled() {
+        return prefs.getBoolean(KEY_MONITORING_ENABLED, true);
+    }
+
+    public void setMonitoringEnabled(boolean enabled) {
+        prefs.edit().putBoolean(KEY_MONITORING_ENABLED, enabled).apply();
     }
 
     public float centerXFraction() {
