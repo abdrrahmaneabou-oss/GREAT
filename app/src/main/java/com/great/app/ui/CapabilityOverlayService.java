@@ -36,6 +36,7 @@ public final class CapabilityOverlayService extends Service {
     private static final String KEY_FREEZE_Y = "freeze_y";
     private static final int ACTIVE = 0xffef5350;
     private static final int INACTIVE = 0xff7b808c;
+    private static final int EDITING = 0xffffc107;
     private static final int SIZE_DP = 58;
     private static final long LONG_PRESS_MS = 300L;
 
@@ -91,7 +92,6 @@ public final class CapabilityOverlayService extends Service {
                 prefs.getInt(KEY_ROBOT_X, x),
                 prefs.getInt(KEY_ROBOT_Y, dp(160)), size);
         robotView.setOnTouchListener(new CircleTouch(true));
-        // Added after the snowflake so the robot window is above it when both occupy the same spot.
         windowManager.addView(robotView, robotParams);
 
         clampAndUpdate(robotView, robotParams, KEY_ROBOT_X, KEY_ROBOT_Y, false);
@@ -128,8 +128,10 @@ public final class CapabilityOverlayService extends Service {
 
     private void renderStates() {
         if (robotView != null) {
-            boolean active = FreezeMonitorService.isMonitoringActive();
-            robotView.setBackground(circleBg(active ? ACTIVE : INACTIVE));
+            int color;
+            if (FreezeMonitorService.isEditing()) color = EDITING;
+            else color = FreezeMonitorService.isMonitoringActive() ? ACTIVE : INACTIVE;
+            robotView.setBackground(circleBg(color));
         }
         if (freezeView != null) {
             boolean active = GreatEngine.instance().capabilities().snapshot().enabled(Capability.FREEZE);
@@ -170,7 +172,7 @@ public final class CapabilityOverlayService extends Service {
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
             startActivity(activity);
         }
-        renderStates();
+        handler.postDelayed(this::renderStates, 30);
     }
 
     private void onFreezeClick() {
@@ -231,9 +233,7 @@ public final class CapabilityOverlayService extends Service {
                         dragging = true;
                         cancelLongPress();
                     }
-                    if (dragging) {
-                        move(view, p, startX + Math.round(dx), startY + Math.round(dy));
-                    }
+                    if (dragging) move(view, p, startX + Math.round(dx), startY + Math.round(dy));
                     return true;
                 }
                 case MotionEvent.ACTION_UP -> {
