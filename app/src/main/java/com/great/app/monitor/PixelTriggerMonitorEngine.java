@@ -28,7 +28,7 @@ public final class PixelTriggerMonitorEngine {
         void onStateChanged(State state);
     }
 
-    /** Five packed RGB probes. Alpha is ignored. */
+    /** Five packed RGB probes. Probe 0 is always the exact visible sensor center. */
     public static final class Sample {
         private final int[] probes;
         private final int count;
@@ -55,8 +55,21 @@ public final class PixelTriggerMonitorEngine {
         public int probe(int index) { return probes[index]; }
         public float whiteRatio() { return whiteRatio; }
         public int averageLuminance() { return averageLuminance; }
-        public boolean isArmingWhite() { return count > 0 && whiteRatio >= ARM_WHITE_COVERAGE; }
-        public boolean isFireLuminance() { return count > 0 && averageLuminance <= FIRE_MAX_LUMINANCE; }
+
+        /**
+         * Full-display MediaProjection can capture GREAT's own thin sensor ring. The four outer
+         * probes can therefore see the ring color while the exact center still sees the real pixel
+         * underneath. Keep the original five-point rule, but let a white center pixel arm too.
+         */
+        public boolean isArmingWhite() {
+            return count > 0 && (isPackedWhite(probes[0]) || whiteRatio >= ARM_WHITE_COVERAGE);
+        }
+
+        /** Same protection for firing: a dark center must not be hidden by bright ring probes. */
+        public boolean isFireLuminance() {
+            return count > 0 && (luminance(probes[0]) <= FIRE_MAX_LUMINANCE
+                    || averageLuminance <= FIRE_MAX_LUMINANCE);
+        }
     }
 
     private final Listener listener;
@@ -112,9 +125,14 @@ public final class PixelTriggerMonitorEngine {
     static boolean isProbeDepartureFrom(Sample current, Sample reference) {
         int count = Math.min(Math.min(current.count(), reference.count()), MAX_PROBE_POINTS);
         if (count <= 0) return false;
+
+        // Probe 0 is the exact sensor center. If it changes, that is sufficient evidence even when
+        // the surrounding probes are contaminated by the monitor ring captured in full-display mode.
+        if (probePointChanged(reference.probe(0), current.probe(0))) return true;
+
         int quorum = count >= 5 ? 3 : (count >= 3 ? 2 : 1);
         int changed = 0;
-        for (int i = 0; i < count; i++) {
+        for (int i = 1; i < count; i++) {
             if (probePointChanged(reference.probe(i), current.probe(i))) {
                 changed++;
                 if (changed >= quorum) return true;
