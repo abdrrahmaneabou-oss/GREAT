@@ -13,8 +13,4 @@ interface IShizukuTouchService {
                           long revision) = 3;
     void setTriggerCallback(ITouchTriggerCallback callback) = 4;
     long getTriggerRevision() = 5;
-
-    // Kept temporarily for compatibility with older builds; the locked circle no longer uses it.
-    boolean injectMotion(int action, long downTime, long eventTime,
-                         float x, float y, int displayId) = 6;
 }
