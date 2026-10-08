@@ -87,7 +87,11 @@ public final class ShizukuTouchEngine {
         this.listener = listener;
         if (appContext == null) appContext = context.getApplicationContext();
         if (ready && remote != null) {
-            syncTriggerGeometryInternal(remote);
+            try {
+                syncTriggerGeometryInternal(remote);
+            } catch (Throwable e) {
+                status = "Trigger geometry sync failed";
+            }
             publish();
             return;
         }
