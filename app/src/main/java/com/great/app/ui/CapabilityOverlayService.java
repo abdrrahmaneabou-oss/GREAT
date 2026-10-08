@@ -47,7 +47,6 @@ public final class CapabilityOverlayService extends Service {
         @Override public void run() {
             renderAll();
             renderMonitorToggle();
-            renderMonitoringToggle();
             if (root != null) handler.postDelayed(this, 250);
         }
     };
@@ -59,7 +58,6 @@ public final class CapabilityOverlayService extends Service {
     private MonitorSettingsStore monitorSettings;
     private LinearLayout monitorMenu;
     private TextView monitorToggle;
-    private TextView monitoringToggle;
 
     @Override public void onCreate() {
         super.onCreate();
@@ -118,7 +116,6 @@ public final class CapabilityOverlayService extends Service {
             boolean open = monitorMenu.getVisibility() == View.VISIBLE;
             monitorMenu.setVisibility(open ? View.GONE : View.VISIBLE);
             renderMonitorToggle();
-            renderMonitoringToggle();
             root.post(this::clampAndUpdate);
         });
         add(root, monitor, 6);
@@ -133,14 +130,10 @@ public final class CapabilityOverlayService extends Service {
         monitorToggle.setOnClickListener(v -> toggleMonitor());
         add(monitorMenu, monitorToggle, 0);
 
-        monitoringToggle = smallAction("");
-        monitoringToggle.setOnClickListener(v -> toggleMonitoring());
-        add(monitorMenu, monitoringToggle, 6);
-
         TextView position = smallAction("ADJUST POSITION");
         position.setOnClickListener(v -> {
             if (!FreezeMonitorService.isRunning()) {
-                Toast.makeText(this, "Start CIRCLE first", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Start MONITOR first", Toast.LENGTH_SHORT).show();
                 return;
             }
             startService(new Intent(this, FreezeMonitorService.class).setAction(FreezeMonitorService.ACTION_EDIT));
@@ -153,7 +146,7 @@ public final class CapabilityOverlayService extends Service {
         save.setOnClickListener(v -> {
             if (FreezeMonitorService.isRunning()) {
                 startService(new Intent(this, FreezeMonitorService.class).setAction(FreezeMonitorService.ACTION_LOCK));
-                Toast.makeText(this, monitorSettings.monitoringEnabled() ? "Monitor armed" : "Position saved", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Monitor armed", Toast.LENGTH_SHORT).show();
             }
             monitorMenu.setVisibility(View.GONE);
             root.post(this::clampAndUpdate);
@@ -161,15 +154,13 @@ public final class CapabilityOverlayService extends Service {
         add(monitorMenu, save, 6);
         add(root, monitorMenu, 6);
         renderMonitorToggle();
-        renderMonitoringToggle();
     }
 
-    /** Circle visibility/service control. OFF removes the circle completely. */
     private void toggleMonitor() {
         if (FreezeMonitorService.isRunning()) {
             monitorSettings.setEnabled(false);
             startService(new Intent(this, FreezeMonitorService.class).setAction(FreezeMonitorService.ACTION_STOP));
-            Toast.makeText(this, "Circle hidden", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Monitor stopped", Toast.LENGTH_SHORT).show();
         } else {
             monitorSettings.setEnabled(true);
             Intent activity = new Intent(this, GreatMainActivity.class)
@@ -178,40 +169,14 @@ public final class CapabilityOverlayService extends Service {
             startActivity(activity);
         }
         renderMonitorToggle();
-        renderMonitoringToggle();
-    }
-
-    /** Functional control only. The circle stays visible and immediately turns gray while paused. */
-    private void toggleMonitoring() {
-        if (!FreezeMonitorService.isRunning()) {
-            Toast.makeText(this, "Start CIRCLE first", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        boolean next = !monitorSettings.monitoringEnabled();
-        monitorSettings.setMonitoringEnabled(next);
-        startService(new Intent(this, FreezeMonitorService.class)
-                .setAction(next ? FreezeMonitorService.ACTION_MONITORING_ON
-                        : FreezeMonitorService.ACTION_MONITORING_OFF));
-        Toast.makeText(this, next ? "Monitoring ON" : "Monitoring OFF", Toast.LENGTH_SHORT).show();
-        renderMonitoringToggle();
     }
 
     private void renderMonitorToggle() {
         if (monitorToggle == null) return;
         boolean running = FreezeMonitorService.isRunning();
-        monitorToggle.setText(running ? "CIRCLE  ON" : "CIRCLE  OFF");
+        monitorToggle.setText(running ? "MONITOR  ON" : "MONITOR  OFF");
         monitorToggle.setTextColor(running ? Color.BLACK : TEXT);
         monitorToggle.setBackground(round(running ? ACTIVE : INACTIVE, 12));
-    }
-
-    private void renderMonitoringToggle() {
-        if (monitoringToggle == null) return;
-        boolean running = FreezeMonitorService.isRunning();
-        boolean enabled = running && monitorSettings.monitoringEnabled();
-        monitoringToggle.setText(enabled ? "MONITORING  ON" : "MONITORING  OFF");
-        monitoringToggle.setTextColor(enabled ? Color.BLACK : TEXT);
-        monitoringToggle.setBackground(round(enabled ? ACTIVE : INACTIVE, 12));
-        monitoringToggle.setAlpha(running ? 1f : .65f);
     }
 
     private void addCapability(Capability capability, String label) {
@@ -327,7 +292,7 @@ public final class CapabilityOverlayService extends Service {
         handler.removeCallbacks(renderTick);
         buttons.clear();
         if (root != null) try { windowManager.removeView(root); } catch (Throwable ignored) { }
-        root = null; overlayParams = null; monitorMenu = null; monitorToggle = null; monitoringToggle = null;
+        root = null; overlayParams = null; monitorMenu = null; monitorToggle = null;
     }
 
     @Override public void onDestroy() { removeOverlay(); super.onDestroy(); }
