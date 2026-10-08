@@ -25,16 +25,19 @@ import com.great.app.config.AwgConfigParser;
 import com.great.app.config.CapabilitySettingsStore;
 import com.great.app.config.SecureConfigStore;
 import com.great.app.config.TargetAppsStore;
+import com.great.app.config.TriggerSettingsStore;
 import com.great.app.core.Capability;
 import com.great.app.core.EngineDiagnostics;
 import com.great.app.core.FreezeCore;
 import com.great.app.core.GreatEngine;
 import com.great.app.core.TargetPackages;
+import com.great.app.shizuku.ShizukuTouchEngine;
 import com.great.app.vpn.GreatVpnService;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.Arrays;
+import java.util.Locale;
 
 import rikka.shizuku.Shizuku;
 
@@ -54,11 +57,9 @@ public final class MainActivity extends Activity {
         }
     };
 
-    private final Shizuku.OnBinderReceivedListener shizukuBinderReceived = () -> {
-        refreshShizukuState();
-    };
-
+    private final Shizuku.OnBinderReceivedListener shizukuBinderReceived = this::refreshShizukuState;
     private final Shizuku.OnBinderDeadListener shizukuBinderDead = () -> {
+        GreatEngine.instance().freezeCore().setHoldTrigger(false);
         refreshShizukuState();
     };
 
@@ -76,6 +77,8 @@ public final class MainActivity extends Activity {
     private TextView start;
     private TextView stats;
     private TextView freezeDuration;
+    private TextView triggerDiameter;
+    private TextView triggerEngineState;
     private TextView shizukuState;
     private TextView shizukuConnect;
     private TargetAppsStore targetStore;
@@ -83,11 +86,14 @@ public final class MainActivity extends Activity {
     private TextView targetHeading;
     private LinearLayout targetList;
     private boolean overlayPending;
+    private String pendingTriggerAction;
     private CapabilitySettingsStore tuningStore;
+    private TriggerSettingsStore triggerStore;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         tuningStore = new CapabilitySettingsStore(this);
+        triggerStore = new TriggerSettingsStore(this);
         targetStore = new TargetAppsStore(this);
         applySavedTuning();
 
@@ -98,16 +104,25 @@ public final class MainActivity extends Activity {
         setContentView(content());
         refresh();
         refreshShizukuState();
+        refreshTriggerState();
         handler.post(statsTick);
     }
 
     @Override protected void onResume() {
         super.onResume();
-        if (overlayPending && Settings.canDrawOverlays(this)) {
-            overlayPending = false;
-            startOverlay();
+        if (Settings.canDrawOverlays(this)) {
+            if (overlayPending) {
+                overlayPending = false;
+                startOverlay();
+            }
+            if (pendingTriggerAction != null) {
+                String action = pendingTriggerAction;
+                pendingTriggerAction = null;
+                startTriggerOverlay(action);
+            }
         }
         refreshShizukuState();
+        refreshTriggerState();
     }
 
     @Override protected void onDestroy() {
@@ -152,13 +167,14 @@ public final class MainActivity extends Activity {
         add(root, card, 26);
 
         add(root, shizukuCard(), 14);
+        add(root, triggerCard(), 14);
         add(root, targetCard(), 14);
 
         LinearLayout tuningCard = column();
         tuningCard.setPadding(dp(18), dp(18), dp(18), dp(18));
         tuningCard.setBackground(round(SURFACE, 20));
         add(tuningCard, text("AUTO RELEASE", 11, ACCENT, true), 0);
-        add(tuningCard, text("Freeze releases automatically at the selected limit. Turning it off releases earlier.",
+        add(tuningCard, text("Manual Freeze uses this safety limit. Holding the trigger circle stays active until you lift your finger.",
                 12, MUTED, false), 10);
         freezeDuration = durationRow(tuningCard);
         refreshDurations();
@@ -172,7 +188,7 @@ public final class MainActivity extends Activity {
         add(diagnosticCard, stats, 12);
         add(root, diagnosticCard, 14);
 
-        add(root, text("Freeze • Editable targets • 10,000-packet limit",
+        add(root, text("Freeze • Shizuku trigger • Editable targets • 10,000-packet limit",
                 12, MUTED, false), 18);
 
         ScrollView scroll = new ScrollView(this);
@@ -187,7 +203,7 @@ public final class MainActivity extends Activity {
         card.setBackground(round(SURFACE, 20));
 
         add(card, text("SHIZUKU", 11, ACCENT, true), 0);
-        add(card, text("Connect GREAT to Shizuku so privileged features can use its binder later.",
+        add(card, text("Connect GREAT to Shizuku for the privileged touch forwarding engine.",
                 12, MUTED, false), 8);
 
         shizukuState = text("Checking Shizuku…", 14, TEXT, false);
@@ -197,6 +213,94 @@ public final class MainActivity extends Activity {
         shizukuConnect.setOnClickListener(v -> requestShizuku());
         add(card, shizukuConnect, 14);
         return card;
+    }
+
+    private View triggerCard() {
+        LinearLayout card = column();
+        card.setPadding(dp(18), dp(18), dp(18), dp(18));
+        card.setBackground(round(SURFACE, 20));
+
+        add(card, text("FREEZE TRIGGER", 11, ACCENT, true), 0);
+        add(card, text("Press inside the circle: Freeze ON. Drag outside while still holding: Freeze stays ON. Lift anywhere: Freeze OFF.",
+                12, MUTED, false), 8);
+
+        triggerEngineState = text("Touch engine idle", 12, TEXT, false);
+        add(card, triggerEngineState, 10);
+
+        LinearLayout sizeRow = new LinearLayout(this);
+        sizeRow.setOrientation(LinearLayout.HORIZONTAL);
+        sizeRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = text("Diameter", 14, TEXT, true);
+        sizeRow.addView(title, new LinearLayout.LayoutParams(0, -2, 1f));
+
+        TextView minus = smallButton("−");
+        triggerDiameter = text("", 14, TEXT, true);
+        triggerDiameter.setGravity(Gravity.CENTER);
+        triggerDiameter.setMinWidth(dp(78));
+        TextView plus = smallButton("+");
+        minus.setOnClickListener(v -> adjustTriggerDiameter(-TriggerSettingsStore.STEP_CM));
+        plus.setOnClickListener(v -> adjustTriggerDiameter(TriggerSettingsStore.STEP_CM));
+        sizeRow.addView(minus, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        sizeRow.addView(triggerDiameter, new LinearLayout.LayoutParams(dp(86), dp(42)));
+        sizeRow.addView(plus, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        add(card, sizeRow, 14);
+        refreshTriggerDiameter();
+
+        TextView lock = button("SHOW / LOCK TRIGGER", true);
+        lock.setOnClickListener(v -> requestTriggerOverlay(FreezeTriggerOverlayService.ACTION_LOCK));
+        add(card, lock, 14);
+
+        TextView edit = button("EDIT TRIGGER POSITION", false);
+        edit.setOnClickListener(v -> requestTriggerOverlay(FreezeTriggerOverlayService.ACTION_EDIT));
+        add(card, edit, 10);
+
+        TextView hide = button("HIDE TRIGGER", false);
+        hide.setOnClickListener(v -> startTriggerOverlay(FreezeTriggerOverlayService.ACTION_HIDE));
+        add(card, hide, 10);
+        return card;
+    }
+
+    private void adjustTriggerDiameter(float deltaCm) {
+        triggerStore.setDiameterCm(triggerStore.diameterCm() + deltaCm);
+        refreshTriggerDiameter();
+        startTriggerOverlay(FreezeTriggerOverlayService.ACTION_REFRESH);
+    }
+
+    private void refreshTriggerDiameter() {
+        if (triggerDiameter != null) {
+            triggerDiameter.setText(String.format(Locale.US, "%.2f cm", triggerStore.diameterCm()));
+        }
+    }
+
+    private void refreshTriggerState() {
+        if (triggerEngineState == null) return;
+        ShizukuTouchEngine touch = ShizukuTouchEngine.instance();
+        String state = touch.status();
+        triggerEngineState.setText(state == null ? "Touch engine idle" : state);
+    }
+
+    private void requestTriggerOverlay(String action) {
+        if (!Settings.canDrawOverlays(this)) {
+            pendingTriggerAction = action;
+            Intent permission = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(permission);
+            return;
+        }
+        startTriggerOverlay(action);
+    }
+
+    private void startTriggerOverlay(String action) {
+        if (FreezeTriggerOverlayService.ACTION_HIDE.equals(action)) {
+            startService(new Intent(this, FreezeTriggerOverlayService.class).setAction(action));
+            return;
+        }
+        if (!isShizukuGranted() && !FreezeTriggerOverlayService.ACTION_EDIT.equals(action)) {
+            toast("Connect Shizuku before locking the Freeze trigger");
+            return;
+        }
+        startService(new Intent(this, FreezeTriggerOverlayService.class).setAction(action));
+        handler.postDelayed(this::refreshTriggerState, 350);
     }
 
     private void requestShizuku() {
@@ -229,31 +333,41 @@ public final class MainActivity extends Activity {
         Shizuku.requestPermission(SHIZUKU_PERMISSION);
     }
 
+    private boolean isShizukuGranted() {
+        if (!Shizuku.pingBinder()) return false;
+        try { return Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED; }
+        catch (Throwable e) { return false; }
+    }
+
     private void refreshShizukuState() {
-        if (shizukuState == null || shizukuConnect == null) return;
+        handler.post(() -> {
+            if (shizukuState == null || shizukuConnect == null) return;
 
-        if (!Shizuku.pingBinder()) {
-            shizukuState.setText("Disconnected • Shizuku service unavailable");
-            shizukuConnect.setText("CONNECT SHIZUKU");
-            shizukuConnect.setAlpha(1f);
-            return;
-        }
+            if (!Shizuku.pingBinder()) {
+                shizukuState.setText("Disconnected • Shizuku service unavailable");
+                shizukuConnect.setText("CONNECT SHIZUKU");
+                shizukuConnect.setAlpha(1f);
+                refreshTriggerState();
+                return;
+            }
 
-        try {
-            if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
-                shizukuState.setText("Connected • Permission granted");
-                shizukuConnect.setText("SHIZUKU CONNECTED");
-                shizukuConnect.setAlpha(.75f);
-            } else {
-                shizukuState.setText("Ready • Permission required");
+            try {
+                if (Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+                    shizukuState.setText("Connected • Permission granted");
+                    shizukuConnect.setText("SHIZUKU CONNECTED");
+                    shizukuConnect.setAlpha(.75f);
+                } else {
+                    shizukuState.setText("Ready • Permission required");
+                    shizukuConnect.setText("CONNECT SHIZUKU");
+                    shizukuConnect.setAlpha(1f);
+                }
+            } catch (Throwable e) {
+                shizukuState.setText("Disconnected • Shizuku unavailable");
                 shizukuConnect.setText("CONNECT SHIZUKU");
                 shizukuConnect.setAlpha(1f);
             }
-        } catch (Throwable e) {
-            shizukuState.setText("Disconnected • Shizuku unavailable");
-            shizukuConnect.setText("CONNECT SHIZUKU");
-            shizukuConnect.setAlpha(1f);
-        }
+            refreshTriggerState();
+        });
     }
 
     private TextView durationRow(LinearLayout parent) {
@@ -394,8 +508,10 @@ public final class MainActivity extends Activity {
     }
 
     private void stopGreat() {
+        GreatEngine.instance().freezeCore().setHoldTrigger(false);
         startService(new Intent(this, GreatVpnService.class).setAction(GreatVpnService.ACTION_STOP));
         startService(new Intent(this, CapabilityOverlayService.class).setAction(CapabilityOverlayService.ACTION_HIDE));
+        startService(new Intent(this, FreezeTriggerOverlayService.class).setAction(FreezeTriggerOverlayService.ACTION_HIDE));
         toast("Stopping GREAT…");
     }
 
@@ -453,11 +569,13 @@ public final class MainActivity extends Activity {
         EngineDiagnostics.Snapshot s = engine.diagnostics().snapshot();
         FreezeCore freeze = engine.freezeCore();
         String active = engine.capabilities().snapshot().enabled(Capability.FREEZE) ? "ON" : "OFF";
+        String held = freeze.holdTriggerActive() ? "HELD" : "IDLE";
         stats.setText("OUT " + s.outbound() + "   IN " + s.inbound() +
                 "\nPASS " + s.passed() + "   HOLD " + s.held() +
                 "\nRELEASE " + s.released() + "   EVICTED " + s.schedulerRejected() +
                 "\nFREEZE Q " + freeze.freezeQueueSize() + "/" + FreezeCore.CAPACITY +
-                "\nFREEZE " + active + "   TARGETS " + targetStore.names().size());
+                "\nFREEZE " + active + "   TRIGGER " + held + "   TARGETS " + targetStore.names().size());
+        refreshTriggerState();
     }
 
     private static byte[] readBounded(InputStream input, int max) throws Exception {
