@@ -14,7 +14,7 @@ public final class MonitorSettingsStore {
 
     public static final int MIN_FREEZE_TENTHS = 1;   // 0.10 s
     public static final int MAX_FREEZE_TENTHS = 50; // 5.00 s
-    public static final int DEFAULT_FREEZE_TENTHS = 10; // 1.00 s
+    public static final int DEFAULT_FREEZE_TENTHS = 1; // 0.10 s
 
     private final SharedPreferences prefs;
 
