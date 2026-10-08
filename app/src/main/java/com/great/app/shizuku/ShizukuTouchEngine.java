@@ -110,20 +110,21 @@ public final class ShizukuTouchEngine {
         }
     }
 
-    public void forward(MotionEvent event, int displayId) {
+    public boolean forward(MotionEvent event, int displayId) {
         IShizukuTouchService service = remote;
-        if (!ready || service == null || event == null) return;
+        if (!ready || service == null || event == null) return false;
         int action = event.getActionMasked();
         if (action != MotionEvent.ACTION_DOWN && action != MotionEvent.ACTION_MOVE
-                && action != MotionEvent.ACTION_UP && action != MotionEvent.ACTION_CANCEL) return;
+                && action != MotionEvent.ACTION_UP && action != MotionEvent.ACTION_CANCEL) return false;
         try {
-            service.injectMotion(action, event.getDownTime(), event.getEventTime(),
+            return service.injectMotion(action, event.getDownTime(), event.getEventTime(),
                     event.getRawX(), event.getRawY(), displayId);
         } catch (Throwable e) {
             ready = false;
             status = "Touch forwarding failed";
             GreatEngine.instance().freezeCore().setHoldTrigger(false);
             publish();
+            return false;
         }
     }
 
