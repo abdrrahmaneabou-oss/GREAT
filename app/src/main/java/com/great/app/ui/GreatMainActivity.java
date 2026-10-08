@@ -24,6 +24,7 @@ import android.widget.Toast;
 
 import com.great.app.config.AwgConfigParser;
 import com.great.app.config.CapabilitySettingsStore;
+import com.great.app.config.MonitorSettingsStore;
 import com.great.app.config.SecureConfigStore;
 import com.great.app.config.TargetAppsStore;
 import com.great.app.core.Capability;
@@ -34,6 +35,7 @@ import com.great.app.vpn.GreatVpnService;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.util.Arrays;
+import java.util.Locale;
 
 /** Minimal GREAT control surface: config, VPN, targets and the two floating circles. */
 public final class GreatMainActivity extends Activity {
@@ -51,18 +53,22 @@ public final class GreatMainActivity extends Activity {
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private TargetAppsStore targetStore;
+    private MonitorSettingsStore monitorSettings;
     private MediaProjectionManager projectionManager;
     private TextView configState;
     private TextView targetHeading;
+    private TextView robotTimeoutValue;
     private LinearLayout targetList;
     private EditText packageInput;
     private boolean overlayPending;
     private boolean monitorCapturePending;
     private boolean monitorEditAfterStart;
+    private boolean monitorStartActiveAfterCapture;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
         targetStore = new TargetAppsStore(this);
+        monitorSettings = new MonitorSettingsStore(this);
         projectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         GreatEngine.instance().freezeCore().setFreezeDurationSeconds(new CapabilitySettingsStore(this).freezeSeconds());
         setContentView(buildContent());
@@ -79,9 +85,9 @@ public final class GreatMainActivity extends Activity {
     private void handleAction(Intent intent) {
         if (intent == null) return;
         if (ACTION_REQUEST_MONITOR_CAPTURE.equals(intent.getAction())) {
-            handler.post(() -> requestMonitorCapture(false));
+            handler.post(() -> requestMonitorCapture(true, false));
         } else if (ACTION_REQUEST_MONITOR_EDIT.equals(intent.getAction())) {
-            handler.post(() -> requestMonitorCapture(true));
+            handler.post(() -> requestMonitorCapture(false, true));
         }
     }
 
@@ -91,6 +97,7 @@ public final class GreatMainActivity extends Activity {
             if (overlayPending) {
                 overlayPending = false;
                 showControlOverlay();
+                ensureMonitorSessionForCircles();
             }
             if (monitorCapturePending) {
                 monitorCapturePending = false;
@@ -109,7 +116,9 @@ public final class GreatMainActivity extends Activity {
         add(root, configCard(), 26);
         add(root, vpnCard(), 14);
         add(root, targetCard(), 14);
-        add(root, circlesCard(), 14);
+        add(root, robotTimeoutCard(), 14);
+        add(root, showCirclesCard(), 14);
+        add(root, hideCirclesCard(), 14);
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
@@ -140,16 +149,47 @@ public final class GreatMainActivity extends Activity {
         return card;
     }
 
-    private View circlesCard() {
+    private View robotTimeoutCard() {
         LinearLayout card = card();
-        add(card, text("FLOATING CIRCLES", 11, ACCENT, true), 0);
-        add(card, text("🤖 controls visual monitoring.  ❄️ controls manual Freeze.", 12, MUTED, false), 8);
+        add(card, text("ROBOT MAX FREEZE", 11, ACCENT, true), 0);
+        add(card, text("After this limit, robot Freeze stops and cannot fire again until white returns and re-arms it.",
+                12, MUTED, false), 8);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView minus = smallButton("−");
+        robotTimeoutValue = text(formatRobotTimeout(), 18, TEXT, true);
+        robotTimeoutValue.setGravity(Gravity.CENTER);
+        TextView plus = smallButton("+");
+        minus.setOnClickListener(v -> adjustRobotTimeout(-1));
+        plus.setOnClickListener(v -> adjustRobotTimeout(1));
+
+        row.addView(minus, new LinearLayout.LayoutParams(dp(54), dp(48)));
+        row.addView(robotTimeoutValue, new LinearLayout.LayoutParams(0, dp(48), 1f));
+        row.addView(plus, new LinearLayout.LayoutParams(dp(54), dp(48)));
+        add(card, row, 14);
+        add(card, text("0.10 s  →  5.00 s   •   step 0.10 s", 11, MUTED, false), 8);
+        return card;
+    }
+
+    private View showCirclesCard() {
+        LinearLayout card = card();
+        add(card, text("SHOW CIRCLES", 11, ACCENT, true), 0);
+        add(card, text("Shows 🤖 and ❄️ and prepares screen capture immediately.", 12, MUTED, false), 8);
         TextView show = button("SHOW CIRCLES", true);
         show.setOnClickListener(v -> requestControlOverlay());
         add(card, show, 14);
+        return card;
+    }
+
+    private View hideCirclesCard() {
+        LinearLayout card = card();
+        add(card, text("HIDE CIRCLES", 11, ACCENT, true), 0);
         TextView hide = button("HIDE CIRCLES", false);
         hide.setOnClickListener(v -> hideControlOverlay());
-        add(card, hide, 10);
+        add(card, hide, 12);
         return card;
     }
 
@@ -183,6 +223,15 @@ public final class GreatMainActivity extends Activity {
         return card;
     }
 
+    private void adjustRobotTimeout(int deltaTenths) {
+        monitorSettings.setMaxFreezeTenths(monitorSettings.maxFreezeTenths() + deltaTenths);
+        if (robotTimeoutValue != null) robotTimeoutValue.setText(formatRobotTimeout());
+    }
+
+    private String formatRobotTimeout() {
+        return String.format(Locale.US, "%.2f s", monitorSettings.maxFreezeTenths() / 10.0f);
+    }
+
     private void requestVpn() {
         if (!new SecureConfigStore(this).exists()) {
             toast("Import an AmneziaWG .conf file first");
@@ -211,6 +260,7 @@ public final class GreatMainActivity extends Activity {
     private void requestControlOverlay() {
         if (Settings.canDrawOverlays(this)) {
             showControlOverlay();
+            ensureMonitorSessionForCircles();
             return;
         }
         overlayPending = true;
@@ -228,14 +278,26 @@ public final class GreatMainActivity extends Activity {
                 .setAction(CapabilityOverlayService.ACTION_HIDE));
     }
 
-    private void requestMonitorCapture(boolean editAfterStart) {
+    /** SHOW CIRCLES establishes MediaProjection immediately but leaves robot monitoring OFF/gray. */
+    private void ensureMonitorSessionForCircles() {
+        if (FreezeMonitorService.isRunning()) return;
+        monitorSettings.setMonitoringEnabled(false);
+        monitorStartActiveAfterCapture = false;
+        monitorEditAfterStart = false;
+        launchCapturePrompt();
+    }
+
+    /** Used by the robot itself when capture was not prepared yet. */
+    private void requestMonitorCapture(boolean startActive, boolean editAfterStart) {
         monitorEditAfterStart = editAfterStart;
+        monitorStartActiveAfterCapture = startActive;
         if (FreezeMonitorService.isRunning()) {
             startService(new Intent(this, FreezeMonitorService.class)
                     .setAction(editAfterStart ? FreezeMonitorService.ACTION_EDIT
                             : FreezeMonitorService.ACTION_MONITORING_ON));
             return;
         }
+        monitorSettings.setMonitoringEnabled(startActive);
         if (!Settings.canDrawOverlays(this)) {
             monitorCapturePending = true;
             startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -263,6 +325,7 @@ public final class GreatMainActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == MONITOR_CAPTURE) {
             if (resultCode == RESULT_OK && data != null) {
+                monitorSettings.setMonitoringEnabled(monitorStartActiveAfterCapture);
                 Intent service = new Intent(this, FreezeMonitorService.class)
                         .setAction(FreezeMonitorService.ACTION_START)
                         .putExtra(FreezeMonitorService.EXTRA_RESULT_CODE, resultCode)
@@ -277,6 +340,7 @@ public final class GreatMainActivity extends Activity {
                 toast("Screen capture permission is required for the monitor");
             }
             monitorEditAfterStart = false;
+            monitorStartActiveAfterCapture = false;
             return;
         }
         if (requestCode == VPN_PERMISSION && resultCode == RESULT_OK) {
@@ -374,6 +438,15 @@ public final class GreatMainActivity extends Activity {
         v.setMinHeight(dp(58));
         v.setPadding(dp(16), dp(14), dp(16), dp(14));
         v.setBackground(round(primary ? ACCENT : 0xff202431, 18));
+        v.setClickable(true);
+        v.setFocusable(true);
+        return v;
+    }
+
+    private TextView smallButton(String label) {
+        TextView v = text(label, 22, TEXT, true);
+        v.setGravity(Gravity.CENTER);
+        v.setBackground(round(0xff202431, 14));
         v.setClickable(true);
         v.setFocusable(true);
         return v;
