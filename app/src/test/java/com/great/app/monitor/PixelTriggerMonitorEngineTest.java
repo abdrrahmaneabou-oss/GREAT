@@ -15,9 +15,9 @@ public final class PixelTriggerMonitorEngineTest {
     @Test public void whiteClassifierMatchesPixelTriggerThresholds() {
         assertTrue(PixelTriggerMonitorEngine.isPackedWhite(0x00ffffff));
         assertTrue(PixelTriggerMonitorEngine.isPackedWhite(0x00d0d0d0));
-        assertFalse(PixelTriggerMonitorEngine.isPackedWhite(0x00a9ffffff)); // min channel < 170
-        assertFalse(PixelTriggerMonitorEngine.isPackedWhite(0x00ffaaaa)); // chroma > 60
-        assertFalse(PixelTriggerMonitorEngine.isPackedWhite(0x00b0b0b0)); // luminance < 190
+        assertFalse(PixelTriggerMonitorEngine.isPackedWhite(0x00a9ffffff));
+        assertFalse(PixelTriggerMonitorEngine.isPackedWhite(0x00ffaaaa));
+        assertFalse(PixelTriggerMonitorEngine.isPackedWhite(0x00b0b0b0));
     }
 
     @Test public void threeOfFiveWhiteProbesQualifyForArming() {
@@ -38,7 +38,6 @@ public final class PixelTriggerMonitorEngineTest {
         List<PixelTriggerMonitorEngine.State> states = new ArrayList<>();
         PixelTriggerMonitorEngine engine = new PixelTriggerMonitorEngine(states::add);
         PixelTriggerMonitorEngine.Sample white = sample(0xffffff, 0xffffff, 0xffffff, 0xffffff, 0xffffff);
-
         engine.process(white);
         engine.process(white);
         assertEquals(PixelTriggerMonitorEngine.State.WAITING_FOR_WHITE, engine.state());
@@ -47,7 +46,7 @@ public final class PixelTriggerMonitorEngineTest {
         assertEquals(List.of(PixelTriggerMonitorEngine.State.ARMED), states);
     }
 
-    @Test public void fireRequiresThreeOfFiveProbeDepartureAndDarkLuminance() {
+    @Test public void fireRequiresProbeDepartureAndDarkAverageLuminance() {
         PixelTriggerMonitorEngine engine = new PixelTriggerMonitorEngine(null);
         PixelTriggerMonitorEngine.Sample white = sample(0xffffff, 0xffffff, 0xffffff, 0xffffff, 0xffffff);
         engine.process(white); engine.process(white); engine.process(white);
@@ -56,7 +55,7 @@ public final class PixelTriggerMonitorEngineTest {
         engine.process(sample(0x101010, 0x101010, 0xffffff, 0xffffff, 0xffffff));
         assertEquals(PixelTriggerMonitorEngine.State.ARMED, engine.state());
 
-        engine.process(sample(0x101010, 0x101010, 0x101010, 0xffffff, 0xffffff));
+        engine.process(sample(0x101010, 0x101010, 0x101010, 0x101010, 0xffffff));
         assertEquals(PixelTriggerMonitorEngine.State.FIRED, engine.state());
     }
 
@@ -67,7 +66,6 @@ public final class PixelTriggerMonitorEngineTest {
         engine.process(white); engine.process(white); engine.process(white);
         engine.process(dark);
         assertEquals(PixelTriggerMonitorEngine.State.FIRED, engine.state());
-
         engine.process(white);
         engine.process(white);
         assertEquals(PixelTriggerMonitorEngine.State.FIRED, engine.state());
