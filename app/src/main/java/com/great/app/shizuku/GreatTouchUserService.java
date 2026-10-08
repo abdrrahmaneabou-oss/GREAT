@@ -6,13 +6,17 @@ import android.os.Process;
 import android.view.InputDevice;
 import android.view.MotionEvent;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.lang.reflect.Method;
+import java.util.Locale;
 
 import rikka.shizuku.SystemServiceHelper;
 
 /**
- * Shizuku UserService used only to forward touches that GREAT's visible trigger
- * overlay receives. It does not monitor device-wide input.
+ * Shizuku UserService. The live trigger backend is not enabled here yet; getBackend() performs a
+ * one-shot capability probe so GREAT can verify that the Shizuku shell can see a multi-touch
+ * touchscreen before we attach any runtime trigger logic.
  */
 public final class GreatTouchUserService extends IShizukuTouchService.Stub {
     private static final String INPUT_DESCRIPTOR = "android.hardware.input.IInputManager";
@@ -37,7 +41,7 @@ public final class GreatTouchUserService extends IShizukuTouchService.Stub {
 
     @Override public synchronized String getBackend() {
         if (inputBinder == null || !inputBinder.isBinderAlive()) initializeBackend();
-        return backend;
+        return backend + " • " + probeTouchSource();
     }
 
     @Override public boolean injectMotion(int action, long downTime, long eventTime,
@@ -103,7 +107,7 @@ public final class GreatTouchUserService extends IShizukuTouchService.Stub {
             if (binder == null) {
                 inputBinder = null;
                 injectTransaction = -1;
-                backend = "InputManager binder unavailable";
+                backend = "InputManager binder unavailable • uid=" + Process.myUid();
                 return;
             }
 
@@ -111,12 +115,48 @@ public final class GreatTouchUserService extends IShizukuTouchService.Stub {
                     "android.hardware.input.IInputManager$Stub", "injectInputEvent");
             inputBinder = binder;
             injectTransaction = code != null && code > 0 ? code : FALLBACK_INJECT_TRANSACTION;
-            backend = "Direct IInputManager binder • tx=" + injectTransaction + " • uid=" + Process.myUid();
+            backend = "Shizuku UserService ready • uid=" + Process.myUid();
         } catch (Throwable e) {
             inputBinder = null;
             injectTransaction = -1;
             String message = e.getMessage();
             backend = "Input backend error: " + (message == null ? e.getClass().getSimpleName() : message);
+        }
+    }
+
+    private static String probeTouchSource() {
+        java.lang.Process process = null;
+        try {
+            process = new ProcessBuilder("/system/bin/getevent", "-pl")
+                    .redirectErrorStream(true)
+                    .start();
+            boolean hasMtX = false;
+            boolean hasMtY = false;
+            String deviceName = null;
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String lower = line.toLowerCase(Locale.US);
+                    if (lower.contains("name:") && (lower.contains("touch") || lower.contains("goodix")
+                            || lower.contains("synaptics") || lower.contains("fts"))) {
+                        int first = line.indexOf('"');
+                        int last = line.lastIndexOf('"');
+                        if (first >= 0 && last > first) deviceName = line.substring(first + 1, last);
+                    }
+                    if (line.contains("ABS_MT_POSITION_X")) hasMtX = true;
+                    if (line.contains("ABS_MT_POSITION_Y")) hasMtY = true;
+                }
+            }
+            try { process.waitFor(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            if (hasMtX && hasMtY) {
+                return "multi-touch source visible" + (deviceName == null ? "" : " • " + deviceName);
+            }
+            return "no multi-touch source detected";
+        } catch (Throwable e) {
+            String message = e.getMessage();
+            return "touch probe failed: " + (message == null ? e.getClass().getSimpleName() : message);
+        } finally {
+            if (process != null) process.destroy();
         }
     }
 }
