@@ -10,8 +10,8 @@ android {
         applicationId = "com.great.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.5.0-trigger-engine"
+        versionCode = 9
+        versionName = "0.6.0-visual-monitor"
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
         ndk {
             abiFilters += listOf("arm64-v8a")

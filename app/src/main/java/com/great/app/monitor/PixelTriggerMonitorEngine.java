@@ -48,7 +48,7 @@ public final class PixelTriggerMonitorEngine {
                 luminance += luminance(rgb);
             }
             whiteRatio = this.count == 0 ? 0f : (float) whites / this.count;
-            averageLuminance = this.count == 0 ? 0 : Math.round((float) luminance / this.count);
+            averageLuminance = this.count == 0 ? 0 : luminance / this.count;
         }
 
         public int count() { return count; }
@@ -63,6 +63,18 @@ public final class PixelTriggerMonitorEngine {
     private final ArrayDeque<Sample> whiteFrames = new ArrayDeque<>();
     private State state = State.WAITING_FOR_WHITE;
     private Sample baseline;
+
+    public PixelTriggerMonitorEngine() { this(null); }
+
+    public boolean triggered() { return state == State.FIRED; }
+
+    public State process(PixelSample sample) {
+        if (sample == null) return state;
+        int[] probes = new int[sample.count];
+        for (int i = 0; i < probes.length; i++) probes[i] = sample.probe(i);
+        process(new Sample(probes, probes.length));
+        return state;
+    }
 
     public PixelTriggerMonitorEngine(Listener listener) {
         this.listener = listener;
@@ -95,6 +107,7 @@ public final class PixelTriggerMonitorEngine {
             whiteFrames.clear();
             return;
         }
+        if (!whiteFrames.isEmpty() && whiteFrames.peekLast().count() != sample.count()) whiteFrames.clear();
         whiteFrames.addLast(sample);
         while (whiteFrames.size() > requiredFrames) whiteFrames.removeFirst();
         if (whiteFrames.size() < requiredFrames) return;
@@ -168,9 +181,9 @@ public final class PixelTriggerMonitorEngine {
         int[] averaged = new int[MAX_PROBE_POINTS];
         for (int i = 0; i < MAX_PROBE_POINTS; i++) {
             if (counts[i] == 0) break;
-            int r = Math.round((float) sumR[i] / counts[i]);
-            int g = Math.round((float) sumG[i] / counts[i]);
-            int b = Math.round((float) sumB[i] / counts[i]);
+            int r = sumR[i] / counts[i];
+            int g = sumG[i] / counts[i];
+            int b = sumB[i] / counts[i];
             averaged[i] = (r << 16) | (g << 8) | b;
             valid++;
         }

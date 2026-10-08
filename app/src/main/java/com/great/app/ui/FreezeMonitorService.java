@@ -1,509 +1,352 @@
 package com.great.app.ui;
 
-import android.app.Notification;
-import android.app.NotificationChannel;
-import android.app.NotificationManager;
-import android.app.Service;
-import android.content.Intent;
+import android.app.*;
+import android.content.*;
 import android.content.pm.ServiceInfo;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.PixelFormat;
-import android.graphics.Point;
-import android.graphics.Rect;
+import android.graphics.*;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
+import android.hardware.input.InputManager;
 import android.media.Image;
 import android.media.ImageReader;
 import android.media.projection.MediaProjection;
 import android.media.projection.MediaProjectionManager;
-import android.os.Build;
-import android.os.Handler;
-import android.os.HandlerThread;
-import android.os.IBinder;
-import android.os.Looper;
+import android.os.*;
+import android.os.Process;
 import android.provider.Settings;
 import android.util.DisplayMetrics;
-import android.view.Gravity;
-import android.view.MotionEvent;
-import android.view.View;
-import android.view.WindowManager;
+import android.view.*;
+import android.widget.Toast;
 
 import com.great.app.config.MonitorSettingsStore;
 import com.great.app.core.GreatEngine;
-import com.great.app.monitor.PixelTriggerMonitorEngine;
+import com.great.app.monitor.*;
 
-import java.nio.ByteBuffer;
-
-/**
- * Tiny visual sensor based on PixelTrigger's right-side monitor model.
- * The running overlay never receives touches; MediaProjection samples only five RGB points.
- */
+/** One full-display capture session, one passive ring, one independent Freeze source. */
 public final class FreezeMonitorService extends Service {
-    public static final String ACTION_START = "com.great.app.action.START_FREEZE_MONITOR";
-    public static final String ACTION_EDIT = "com.great.app.action.EDIT_FREEZE_MONITOR";
-    public static final String ACTION_LOCK = "com.great.app.action.LOCK_FREEZE_MONITOR";
-    public static final String ACTION_STOP = "com.great.app.action.STOP_FREEZE_MONITOR";
-    public static final String EXTRA_RESULT_CODE = "projection_result_code";
-    public static final String EXTRA_RESULT_DATA = "projection_result_data";
+    public static final String ACTION_START = "com.great.app.monitor.START";
+    public static final String ACTION_STOP = "com.great.app.monitor.STOP";
+    public static final String ACTION_EDIT = "com.great.app.monitor.EDIT";
+    public static final String ACTION_LOCK = "com.great.app.monitor.LOCK";
+    public static final String ACTION_REFRESH = "com.great.app.monitor.REFRESH";
+    private static volatile boolean sessionActive, monitoring;
+    private static volatile String status = "Monitor OFF";
+    public static boolean isMonitoring() { return monitoring; }
+    public static String status() { return status; }
 
-    private static final int NOTIFICATION_ID = 4107;
-    private static final String CHANNEL_ID = "great_visual_monitor";
-    private static final int COLOR_WAITING = Color.rgb(255, 184, 77);
-    private static final int COLOR_ARMED = Color.rgb(60, 220, 120);
-    private static final int COLOR_FIRED = Color.rgb(255, 80, 95);
-    private static final int COLOR_NOT_READY = Color.rgb(220, 85, 255);
+    public static void request(Context context, String action) {
+        if (ACTION_STOP.equals(action)) {
+            context.stopService(new Intent(context, FreezeMonitorService.class));
+        } else if ((ACTION_START.equals(action) || ACTION_LOCK.equals(action)) && !sessionActive) {
+            context.startActivity(new Intent(context, MonitorPermissionActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } else {
+            context.startService(new Intent(context, FreezeMonitorService.class).setAction(action));
+        }
+    }
 
-    private static volatile boolean running;
-    private static volatile String publicStatus = "Monitor stopped";
-
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private WindowManager windowManager;
-    private MonitorSettingsStore settings;
-    private MediaProjectionManager projectionManager;
-    private MediaProjection projection;
-    private VirtualDisplay virtualDisplay;
-    private ImageReader imageReader;
+    private final Handler main = new Handler(Looper.getMainLooper());
+    // Serializes frame decisions with stop/edit/geometry changes so stale frames cannot re-enable Freeze.
+    private final Object gate = new Object();
+    private final PixelTriggerMonitorEngine detector = new PixelTriggerMonitorEngine();
+    private final PixelProbeSampler sampler = new PixelProbeSampler();
     private HandlerThread captureThread;
-    private Handler captureHandler;
-    private PixelTriggerMonitorEngine engine;
+    private Handler capture;
+    private WindowManager windows;
+    private DisplayManager displays;
+    private MonitorSettingsStore settings;
+    private Ring ring;
+    private WindowManager.LayoutParams params;
+    private int width, height, rotation, diameter, generation;
+    private boolean editing, closed, ready, contentVisible = true;
+    private Geometry geometry;
+    // These capture resources are accessed only on the capture thread.
+    private MediaProjection projection;
+    private VirtualDisplay display;
+    private ImageReader reader;
+    private int readerGeneration = -1;
+    private PixelTriggerMonitorEngine.State renderedState;
 
-    private MonitorView monitorView;
-    private WindowManager.LayoutParams overlayParams;
-    private DragState dragState;
-    private boolean editMode;
-    private boolean shuttingDown;
-    private volatile int monitorColor = COLOR_NOT_READY;
-    private int captureWidth;
-    private int captureHeight;
-
-    public static boolean isRunning() { return running; }
-    public static String status() { return publicStatus; }
+    private final DisplayManager.DisplayListener displayListener = new DisplayManager.DisplayListener() {
+        public void onDisplayAdded(int id) { }
+        public void onDisplayRemoved(int id) { }
+        public void onDisplayChanged(int id) {
+            if (id == Display.DEFAULT_DISPLAY) updateGeometry(false);
+        }
+    };
+    private final BroadcastReceiver screenOff = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) { stopSelf(); }
+    };
+    private final MediaProjection.Callback projectionCallback = new MediaProjection.Callback() {
+        @Override public void onStop() { fail("Screen capture stopped"); }
+        @Override public void onCapturedContentResize(int w, int h) {
+            main.post(() -> {
+                if (closed) return;
+                updateGeometry(false);
+                // A cropped app session has no screen-space origin: do not sample guessed coordinates.
+                if (w != width || h != height) fail("Select the entire screen for Visual Monitor");
+            });
+        }
+        @Override public void onCapturedContentVisibilityChanged(boolean visible) {
+            synchronized (gate) {
+                contentVisible = visible;
+                resetLocked();
+            }
+            main.post(FreezeMonitorService.this::render);
+        }
+    };
 
     @Override public void onCreate() {
         super.onCreate();
-        windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
-        projectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+        windows = getSystemService(WindowManager.class);
+        displays = getSystemService(DisplayManager.class);
         settings = new MonitorSettingsStore(this);
-        engine = new PixelTriggerMonitorEngine(this::onDetectorState);
-        captureThread = new HandlerThread("GREAT-Visual-Monitor");
+        captureThread = new HandlerThread("GREAT-VisualCapture", Process.THREAD_PRIORITY_URGENT_DISPLAY);
         captureThread.start();
-        captureHandler = new Handler(captureThread.getLooper());
-        ensureNotificationChannel();
+        capture = new Handler(captureThread.getLooper());
+        displays.registerDisplayListener(displayListener, main);
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(screenOff, new IntentFilter(Intent.ACTION_SCREEN_OFF), RECEIVER_NOT_EXPORTED);
+        else registerReceiver(screenOff, new IntentFilter(Intent.ACTION_SCREEN_OFF));
     }
 
-    @Override public int onStartCommand(Intent intent, int flags, int startId) {
-        String action = intent == null ? null : intent.getAction();
-        if (ACTION_STOP.equals(action)) {
-            settings.setEnabled(false);
-            stopMonitor();
-            return START_NOT_STICKY;
+    @Override public int onStartCommand(Intent intent, int flags, int id) {
+        if (intent == null || ACTION_STOP.equals(intent.getAction()) || !Settings.canDrawOverlays(this)) {
+            stopSelf(); return START_NOT_STICKY;
         }
-
-        if (ACTION_START.equals(action)) {
-            int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, RESULT_CANCELED);
-            Intent resultData = parcelableIntent(intent, EXTRA_RESULT_DATA);
-            if (resultCode != RESULT_OK || resultData == null) {
-                setNotReady("Screen capture permission required");
-                stopSelf();
-                return START_NOT_STICKY;
-            }
-            settings.setEnabled(true);
-            startMonitor(resultCode, resultData);
-            return START_STICKY;
-        }
-
-        if (ACTION_EDIT.equals(action)) {
-            if (!running) return START_NOT_STICKY;
-            setEditMode(true);
-            return START_STICKY;
-        }
-
-        if (ACTION_LOCK.equals(action)) {
-            if (!running) return START_NOT_STICKY;
-            settings.setEnabled(true);
-            setEditMode(false);
-            resetDetector("Waiting for white");
-            return START_STICKY;
-        }
-        return running ? START_STICKY : START_NOT_STICKY;
-    }
-
-    private void startMonitor(int resultCode, Intent resultData) {
-        if (!Settings.canDrawOverlays(this)) {
-            setNotReady("Overlay permission required");
-            stopSelf();
-            return;
-        }
-        startAsForeground();
-        if (projection == null) {
-            try {
-                projection = projectionManager.getMediaProjection(resultCode, resultData);
-                if (projection == null) throw new IllegalStateException("MediaProjection unavailable");
-                projection.registerCallback(new MediaProjection.Callback() {
-                    @Override public void onStop() {
-                        mainHandler.post(() -> {
-                            if (shuttingDown) return;
-                            setNotReady("Screen capture stopped");
-                            GreatEngine.instance().freezeCore().setHoldTrigger(false);
-                            stopSelf();
-                        });
-                    }
-                }, mainHandler);
-                createCapture();
-            } catch (Throwable e) {
-                setNotReady("Screen capture failed");
-                stopSelf();
-                return;
-            }
-        }
-        ensureOverlay();
-        setEditMode(false);
-        running = true;
-        resetDetector("Waiting for white");
-    }
-
-    private void createCapture() {
-        Point size = screenSize();
-        captureWidth = Math.max(1, size.x);
-        captureHeight = Math.max(1, size.y);
-        int density = getResources().getDisplayMetrics().densityDpi;
-        imageReader = ImageReader.newInstance(captureWidth, captureHeight, PixelFormat.RGBA_8888, 2);
-        imageReader.setOnImageAvailableListener(this::onImageAvailable, captureHandler);
-        virtualDisplay = projection.createVirtualDisplay(
-                "GREAT-Visual-Monitor",
-                captureWidth,
-                captureHeight,
-                density,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader.getSurface(),
-                null,
-                captureHandler);
-        if (virtualDisplay == null) throw new IllegalStateException("VirtualDisplay unavailable");
-    }
-
-    private void onImageAvailable(ImageReader reader) {
-        Image image = null;
+        String action = intent.getAction();
+        if (ACTION_REFRESH.equals(action) && ring == null) { stopSelf(); return START_NOT_STICKY; }
         try {
-            image = reader.acquireLatestImage();
-            if (image == null || editMode || !settings.enabled() || !running) return;
-            PixelTriggerMonitorEngine.Sample sample = sampleImage(image);
-            if (sample != null) engine.process(sample);
-        } catch (Throwable ignored) {
-            mainHandler.post(() -> setNotReady("Monitor frame unavailable"));
-        } finally {
-            if (image != null) image.close();
-        }
-    }
-
-    private PixelTriggerMonitorEngine.Sample sampleImage(Image image) {
-        Image.Plane[] planes = image.getPlanes();
-        if (planes == null || planes.length == 0) return null;
-        Image.Plane plane = planes[0];
-        int pixelStride = plane.getPixelStride();
-        int rowStride = plane.getRowStride();
-        if (pixelStride < 3 || rowStride <= 0) return null;
-
-        Rect crop = image.getCropRect();
-        if (crop == null || crop.width() <= 0 || crop.height() <= 0) return null;
-        Point screen = screenSize();
-        if (screen.x <= 0 || screen.y <= 0) return null;
-
-        float centerScreenX = settings.centerXFraction() * screen.x;
-        float centerScreenY = settings.centerYFraction() * screen.y;
-        int cx = crop.left + Math.round(centerScreenX * crop.width() / screen.x);
-        int cy = crop.top + Math.round(centerScreenY * crop.height() / screen.y);
-
-        float sampleDiameterScreenPx = sensorDiameterPx();
-        int rx = Math.max(1, Math.round((sampleDiameterScreenPx * crop.width() / screen.x) / 2f));
-        int ry = Math.max(1, Math.round((sampleDiameterScreenPx * crop.height() / screen.y) / 2f));
-
-        int[][] points = {
-                {cx, cy}, {cx - rx, cy}, {cx + rx, cy}, {cx, cy - ry}, {cx, cy + ry}
-        };
-        ByteBuffer buffer = plane.getBuffer();
-        int[] packed = new int[PixelTriggerMonitorEngine.MAX_PROBE_POINTS];
-        int count = 0;
-        for (int[] p : points) {
-            int x = clamp(p[0], crop.left, crop.right - 1);
-            int y = clamp(p[1], crop.top, crop.bottom - 1);
-            long offsetLong = (long) y * rowStride + (long) x * pixelStride;
-            if (offsetLong < 0 || offsetLong + 2 >= buffer.limit()) continue;
-            int offset = (int) offsetLong;
-            int r = buffer.get(offset) & 0xff;
-            int g = buffer.get(offset + 1) & 0xff;
-            int b = buffer.get(offset + 2) & 0xff;
-            packed[count++] = (r << 16) | (g << 8) | b;
-        }
-        return count == 0 ? null : new PixelTriggerMonitorEngine.Sample(packed, count);
-    }
-
-    private void onDetectorState(PixelTriggerMonitorEngine.State state) {
-        switch (state) {
-            case WAITING_FOR_WHITE -> {
-                GreatEngine.instance().freezeCore().setHoldTrigger(false);
-                setVisual(COLOR_WAITING, "Waiting for white");
+            if (ACTION_START.equals(action) && intent.hasExtra("result_data")) {
+                if (sessionActive) return START_NOT_STICKY;
+                foreground(); // Must precede getMediaProjection on Android 14+.
+                synchronized (gate) { editing = false; resetLocked(); }
+                updateGeometry(true);
+                int result = intent.getIntExtra("result_code", Activity.RESULT_CANCELED);
+                Intent data = Build.VERSION.SDK_INT >= 33 ? intent.getParcelableExtra("result_data", Intent.class)
+                        : intent.getParcelableExtra("result_data");
+                ring.post(() -> { if (!closed) capture.post(() -> startCapture(result, data)); });
+            } else {
+                synchronized (gate) {
+                    if (ACTION_EDIT.equals(action)) editing = true;
+                    if (ACTION_LOCK.equals(action) || ACTION_START.equals(action)) editing = false;
+                    resetLocked();
+                }
+                updateGeometry(true);
             }
-            case ARMED -> {
-                GreatEngine.instance().freezeCore().setHoldTrigger(false);
-                setVisual(COLOR_ARMED, "ARMED • white detected • Freeze OFF");
+        } catch (RuntimeException e) { fail("Cannot start Visual Monitor: " + e.getClass().getSimpleName()); }
+        return START_NOT_STICKY;
+    }
+
+    private void foreground() {
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        manager.createNotificationChannel(new NotificationChannel("visual_monitor", "Visual Monitor", NotificationManager.IMPORTANCE_LOW));
+        PendingIntent stop = PendingIntent.getService(this, 1,
+                new Intent(this, FreezeMonitorService.class).setAction(ACTION_STOP), PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+        PendingIntent open = PendingIntent.getActivity(this, 2, new Intent(this, GreatMainActivity.class), PendingIntent.FLAG_IMMUTABLE);
+        Notification notification = new Notification.Builder(this, "visual_monitor")
+                .setSmallIcon(android.R.drawable.ic_menu_view).setContentTitle("GREAT Visual Monitor")
+                .setContentText("Monitoring the screen • Tap Stop to end capture")
+                .setContentIntent(open).setOngoing(true).addAction(new Notification.Action.Builder(null, "Stop", stop).build()).build();
+        startForeground(41, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+    }
+
+    private void startCapture(int result, Intent data) {
+        synchronized (gate) { if (closed) return; }
+        try {
+            projection = getSystemService(MediaProjectionManager.class).getMediaProjection(result, data);
+            if (projection == null) throw new IllegalStateException("no projection");
+            projection.registerCallback(projectionCallback, capture);
+            Geometry g;
+            synchronized (gate) { g = geometry; }
+            reader = newReader(g);
+            display = projection.createVirtualDisplay("GREAT-VisualMonitor", half(g.w), half(g.h), half(g.density),
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, reader.getSurface(), null, capture);
+            synchronized (gate) {
+                if (!closed) { sessionActive = true; ready = readerGeneration == generation; }
             }
-            case FIRED -> {
-                GreatEngine.instance().freezeCore().setHoldTrigger(true);
-                setVisual(COLOR_FIRED, "FIRED • white lost • Freeze ON");
+            main.post(this::render);
+        } catch (RuntimeException e) { fail("Screen capture failed: " + e.getClass().getSimpleName()); }
+    }
+
+    private ImageReader newReader(Geometry g) {
+        ImageReader next = ImageReader.newInstance(half(g.w), half(g.h), PixelFormat.RGBA_8888, 2);
+        readerGeneration = g.version;
+        next.setOnImageAvailableListener(source -> processFrame(source, g), capture);
+        return next;
+    }
+
+    private void resizeCapture(Geometry g) {
+        synchronized (gate) { if (closed || g.version != generation) return; }
+        if (display == null) return;
+        try {
+            ImageReader old = reader;
+            reader = newReader(g);
+            display.resize(half(g.w), half(g.h), half(g.density));
+            display.setSurface(reader.getSurface());
+            if (old != null) { old.setOnImageAvailableListener(null, null); old.close(); }
+            synchronized (gate) { ready = !closed && g.version == generation; }
+            main.post(this::render);
+        } catch (RuntimeException e) { fail("Cannot resize screen capture"); }
+    }
+
+    private void processFrame(ImageReader source, Geometry g) {
+        if (source != reader) return;
+        try (Image image = source.acquireLatestImage()) {
+            if (image == null) return;
+            synchronized (gate) {
+                if (closed || editing || !ready || !contentVisible || g.version != generation) return;
+                Rect crop = image.getCropRect();
+                if (crop.isEmpty() || image.getPlanes().length == 0) return;
+                int x = MonitorGeometry.center(g.cx, g.w, crop.left, crop.right);
+                int y = MonitorGeometry.center(g.cy, g.h, crop.top, crop.bottom);
+                Image.Plane plane = image.getPlanes()[0];
+                PixelSample sample = sampler.sample(plane.getBuffer(), plane.getPixelStride(), plane.getRowStride(),
+                        crop.left, crop.top, crop.right, crop.bottom, x, y,
+                        MonitorGeometry.radius(g.diameter, g.w, crop.width()), MonitorGeometry.radius(g.diameter, g.h, crop.height()));
+                PixelTriggerMonitorEngine.State before = detector.state();
+                detector.process(sample);
+                // Direct capture-thread update; UI drawing is never on the critical path.
+                GreatEngine.instance().freezeCore().setHoldTrigger(detector.triggered());
+                if (before != detector.state()) main.post(this::render);
             }
+        } catch (RuntimeException e) { fail("Screen capture interrupted: " + e.getClass().getSimpleName()); }
+    }
+
+    private void updateGeometry(boolean force) {
+        if (closed) return;
+        Rect bounds;
+        if (Build.VERSION.SDK_INT >= 30) bounds = windows.getMaximumWindowMetrics().getBounds();
+        else { Point size = new Point(); windows.getDefaultDisplay().getRealSize(size); bounds = new Rect(0, 0, size.x, size.y); }
+        int nextRotation = windows.getDefaultDisplay().getRotation();
+        if (!force && width == bounds.width() && height == bounds.height() && rotation == nextRotation) return;
+        width = bounds.width(); height = bounds.height(); rotation = nextRotation;
+        DisplayMetrics metrics = getResources().getDisplayMetrics();
+        diameter = MonitorGeometry.mmToPx(.3f, metrics.xdpi, metrics.ydpi, metrics.densityDpi);
+        int size = Math.max(dp(settings.ringDp() + 8), diameter + dp(16));
+        if (ring == null) {
+            ring = new Ring();
+            params = new WindowManager.LayoutParams(size, size, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    overlayFlags(), PixelFormat.TRANSLUCENT);
+            params.gravity = Gravity.TOP | Gravity.LEFT;
+            params.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            if (Build.VERSION.SDK_INT >= 30) params.setFitInsetsTypes(0);
+            ring.setOnTouchListener(this::drag);
         }
-    }
-
-    private void resetDetector(String status) {
-        GreatEngine.instance().freezeCore().setHoldTrigger(false);
-        engine.reset();
-        setVisual(COLOR_WAITING, status);
-    }
-
-    private void setNotReady(String status) {
-        GreatEngine.instance().freezeCore().setHoldTrigger(false);
-        setVisual(COLOR_NOT_READY, status);
-    }
-
-    private void setVisual(int color, String status) {
-        monitorColor = color;
-        publicStatus = status;
-        mainHandler.post(() -> {
-            if (monitorView != null) monitorView.invalidate();
+        params.width = params.height = size;
+        params.x = Math.max(0, Math.min(width - size, Math.round(settings.x(width, height) * width) - size / 2));
+        params.y = Math.max(0, Math.min(height - size, Math.round(settings.y(width, height) * height) - size / 2));
+        params.flags = overlayFlags();
+        params.alpha = editing ? 1f : passiveAlpha();
+        synchronized (gate) { ready = false; generation++; resetLocked(); }
+        if (ring.getParent() == null) windows.addView(ring, params);
+        else windows.updateViewLayout(ring, params);
+        final int expectedGeneration = generation;
+        // Read actual screen coordinates after layout, including cutouts/insets, before capture resumes.
+        ring.post(() -> {
+            if (closed || ring == null || expectedGeneration != generation) return;
+            int[] xy = new int[2]; ring.getLocationOnScreen(xy);
+            Geometry g;
+            synchronized (gate) {
+                ready = false; generation++; resetLocked();
+                g = new Geometry(width, height, xy[0] + ring.getWidth() / 2, xy[1] + ring.getHeight() / 2,
+                        diameter, metrics.densityDpi, generation);
+                geometry = g;
+            }
+            capture.post(() -> resizeCapture(g));
         });
+        // Initial geometry for capture setup; ready remains false until actual layout is published.
+        synchronized (gate) {
+            geometry = new Geometry(width, height, params.x + size / 2, params.y + size / 2,
+                    diameter, metrics.densityDpi, generation);
+        }
+        render();
     }
 
-    private void ensureOverlay() {
-        if (monitorView != null) return;
-        monitorView = new MonitorView();
-        monitorView.setOnTouchListener(this::onMonitorTouch);
-        int touchSize = Math.max(dp(48), Math.round(sensorDiameterPx()) + dp(30));
-        Point screen = screenSize();
-        overlayParams = new WindowManager.LayoutParams(
-                touchSize,
-                touchSize,
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                lockedFlags(),
-                PixelFormat.TRANSLUCENT);
-        overlayParams.gravity = Gravity.TOP | Gravity.START;
-        overlayParams.x = clamp(Math.round(settings.centerXFraction() * screen.x - touchSize / 2f),
-                0, Math.max(0, screen.x - touchSize));
-        overlayParams.y = clamp(Math.round(settings.centerYFraction() * screen.y - touchSize / 2f),
-                0, Math.max(0, screen.y - touchSize));
-        windowManager.addView(monitorView, overlayParams);
+    private int overlayFlags() {
+        return WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS | (editing ? 0 : WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
     }
-
-    private void setEditMode(boolean edit) {
-        editMode = edit;
-        dragState = null;
-        GreatEngine.instance().freezeCore().setHoldTrigger(false);
-        engine.reset();
-        if (monitorView == null || overlayParams == null) return;
-        overlayParams.flags = edit ? editFlags() : lockedFlags();
-        try { windowManager.updateViewLayout(monitorView, overlayParams); } catch (Throwable ignored) { }
-        setVisual(edit ? COLOR_WAITING : COLOR_WAITING, edit ? "Edit monitor position" : "Waiting for white");
+    private float passiveAlpha() {
+        return Build.VERSION.SDK_INT >= 31 ? Math.min(.6f, getSystemService(InputManager.class).getMaximumObscuringOpacityForTouch()) : .6f;
     }
-
-    private boolean onMonitorTouch(View view, MotionEvent event) {
-        if (!editMode || overlayParams == null) return false;
+    private float grabX, grabY;
+    private boolean drag(View view, MotionEvent event) {
+        if (!editing) return false;
         switch (event.getActionMasked()) {
-            case MotionEvent.ACTION_DOWN -> {
-                dragState = new DragState(overlayParams.x, overlayParams.y, event.getRawX(), event.getRawY());
-                return true;
-            }
+            case MotionEvent.ACTION_DOWN -> { grabX = event.getRawX() - params.x; grabY = event.getRawY() - params.y; return true; }
             case MotionEvent.ACTION_MOVE -> {
-                if (dragState == null) return false;
-                moveOverlay(
-                        dragState.startX + Math.round(event.getRawX() - dragState.touchX),
-                        dragState.startY + Math.round(event.getRawY() - dragState.touchY));
-                return true;
+                params.x = Math.max(0, Math.min(width - params.width, Math.round(event.getRawX() - grabX)));
+                params.y = Math.max(0, Math.min(height - params.height, Math.round(event.getRawY() - grabY)));
+                windows.updateViewLayout(ring, params); return true;
             }
             case MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                if (dragState != null) saveCenter();
-                dragState = null;
-                return true;
+                settings.save((params.x + params.width / 2f) / width, (params.y + params.height / 2f) / height, width, height);
+                view.performClick(); return true;
             }
-            default -> { return true; }
+            default -> { return false; }
         }
     }
 
-    private void moveOverlay(int x, int y) {
-        if (monitorView == null || overlayParams == null) return;
-        Point screen = screenSize();
-        overlayParams.x = clamp(x, 0, Math.max(0, screen.x - overlayParams.width));
-        overlayParams.y = clamp(y, 0, Math.max(0, screen.y - overlayParams.height));
-        try { windowManager.updateViewLayout(monitorView, overlayParams); } catch (Throwable ignored) { }
-    }
-
-    private void saveCenter() {
-        if (overlayParams == null) return;
-        Point screen = screenSize();
-        if (screen.x <= 0 || screen.y <= 0) return;
-        settings.setCenterFractions(
-                (overlayParams.x + overlayParams.width / 2f) / screen.x,
-                (overlayParams.y + overlayParams.height / 2f) / screen.y);
-    }
-
-    private float sensorDiameterPx() {
-        DisplayMetrics dm = getResources().getDisplayMetrics();
-        float dpi = (dm.xdpi + dm.ydpi) / 2f;
-        if (!Float.isFinite(dpi) || dpi < 100f || dpi > 1000f) dpi = dm.densityDpi;
-        return Math.max(1f, PixelTriggerMonitorEngine.SENSOR_DIAMETER_MM * dpi / 25.4f);
-    }
-
-    private Point screenSize() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Rect bounds = windowManager.getMaximumWindowMetrics().getBounds();
-            return new Point(Math.max(1, bounds.width()), Math.max(1, bounds.height()));
-        }
-        Point point = new Point();
-        windowManager.getDefaultDisplay().getRealSize(point);
-        return point;
-    }
-
-    private static int baseFlags() {
-        return WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL |
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
-    }
-
-    private static int lockedFlags() {
-        return baseFlags() | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
-    }
-
-    private static int editFlags() {
-        return baseFlags() & ~WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
-    }
-
-    private void startAsForeground() {
-        Notification notification = buildNotification();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
-        } else {
-            startForeground(NOTIFICATION_ID, notification);
-        }
-    }
-
-    private Notification buildNotification() {
-        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? new Notification.Builder(this, CHANNEL_ID)
-                : new Notification.Builder(this);
-        return builder
-                .setSmallIcon(android.R.drawable.ic_menu_view)
-                .setContentTitle("GREAT visual monitor")
-                .setContentText("Monitoring one tiny screen region for Freeze")
-                .setOngoing(true)
-                .build();
-    }
-
-    private void ensureNotificationChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
-        NotificationManager nm = getSystemService(NotificationManager.class);
-        if (nm == null) return;
-        NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID, "GREAT visual monitor", NotificationManager.IMPORTANCE_LOW);
-        channel.setDescription("Required while GREAT monitors the selected screen point");
-        nm.createNotificationChannel(channel);
-    }
-
-    private void stopMonitor() {
-        if (shuttingDown) return;
-        shuttingDown = true;
-        running = false;
+    private void resetLocked() {
+        detector.reset();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
-        publicStatus = "Monitor stopped";
-        removeOverlay();
-        if (imageReader != null) {
-            try { imageReader.setOnImageAvailableListener(null, null); } catch (Throwable ignored) { }
-        }
-        if (virtualDisplay != null) {
-            try { virtualDisplay.release(); } catch (Throwable ignored) { }
-            virtualDisplay = null;
-        }
-        if (imageReader != null) {
-            try { imageReader.close(); } catch (Throwable ignored) { }
-            imageReader = null;
-        }
-        if (projection != null) {
-            MediaProjection p = projection;
-            projection = null;
-            try { p.stop(); } catch (Throwable ignored) { }
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE);
-        else stopForeground(true);
-        stopSelf();
     }
-
-    private void removeOverlay() {
-        if (monitorView != null) {
-            try { windowManager.removeView(monitorView); } catch (Throwable ignored) { }
+    private void render() {
+        synchronized (gate) {
+            if (closed) return;
+            monitoring = sessionActive && !editing;
+            renderedState = detector.state();
+            status = editing ? "EDIT • Drag the ring, then Save / Start Monitor" : !ready ? "Starting screen capture…"
+                    : !contentVisible ? "Capture not visible • Monitor paused" : switch (renderedState) {
+                        case WAITING_FOR_WHITE -> "WAITING • 3 white frames to arm";
+                        case ARMED -> "GREEN / ARMED • Monitor Freeze OFF";
+                        case FIRED -> "RED / TRIGGERED • Monitor Freeze ON";
+                    };
         }
-        monitorView = null;
-        overlayParams = null;
-        editMode = false;
-        dragState = null;
+        if (ring != null) ring.invalidate();
     }
-
+    private void fail(String message) {
+        synchronized (gate) { if (closed) return; ready = false; resetLocked(); }
+        main.post(() -> { if (!closed) { Toast.makeText(this, message, Toast.LENGTH_LONG).show(); stopSelf(); } });
+    }
     @Override public void onDestroy() {
-        running = false;
-        GreatEngine.instance().freezeCore().setHoldTrigger(false);
-        removeOverlay();
-        if (!shuttingDown) {
-            shuttingDown = true;
-            if (virtualDisplay != null) try { virtualDisplay.release(); } catch (Throwable ignored) { }
-            if (imageReader != null) try { imageReader.close(); } catch (Throwable ignored) { }
-            if (projection != null) try { projection.stop(); } catch (Throwable ignored) { }
-        }
-        if (captureThread != null) captureThread.quitSafely();
-        publicStatus = "Monitor stopped";
+        synchronized (gate) { closed = true; ready = false; resetLocked(); sessionActive = monitoring = false; status = "Monitor OFF"; }
+        displays.unregisterDisplayListener(displayListener);
+        unregisterReceiver(screenOff);
+        main.removeCallbacksAndMessages(null);
+        if (ring != null) { windows.removeView(ring); ring = null; }
+        capture.post(() -> {
+            if (reader != null) reader.setOnImageAvailableListener(null, null);
+            if (display != null) { display.release(); display = null; }
+            if (reader != null) { reader.close(); reader = null; }
+            if (projection != null) { projection.unregisterCallback(projectionCallback); projection.stop(); projection = null; }
+            captureThread.quitSafely();
+        });
+        stopForeground(STOP_FOREGROUND_REMOVE);
         super.onDestroy();
     }
-
     @Override public IBinder onBind(Intent intent) { return null; }
+    private int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
+    private static int half(int n) { return Math.max(1, Math.round(n * .5f)); }
+    private record Geometry(int w, int h, int cx, int cy, int diameter, int density, int version) { }
 
-    @SuppressWarnings("deprecation")
-    private static Intent parcelableIntent(Intent source, String key) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            return source.getParcelableExtra(key, Intent.class);
-        }
-        return source.getParcelableExtra(key);
-    }
-
-    private final class MonitorView extends View {
-        private final Paint stroke = new Paint(Paint.ANTI_ALIAS_FLAG);
-
-        MonitorView() {
-            super(FreezeMonitorService.this);
-            stroke.setStyle(Paint.Style.STROKE);
-            stroke.setStrokeWidth(Math.max(1f, getResources().getDisplayMetrics().density));
-        }
-
+    private final class Ring extends View {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Ring() { super(FreezeMonitorService.this); setContentDescription("Visual Monitor position"); }
+        @Override public boolean performClick() { super.performClick(); return true; }
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            stroke.setColor(monitorColor);
-            float diameter = sensorDiameterPx();
-            float radius = Math.max(0.5f, diameter / 2f);
-            canvas.drawCircle(getWidth() / 2f, getHeight() / 2f, radius, stroke);
-        }
-    }
-
-    private static int clamp(int value, int min, int max) {
-        return Math.max(min, Math.min(max, value));
-    }
-
-    private static final class DragState {
-        final int startX;
-        final int startY;
-        final float touchX;
-        final float touchY;
-
-        DragState(int startX, int startY, float touchX, float touchY) {
-            this.startX = startX;
-            this.startY = startY;
-            this.touchX = touchX;
-            this.touchY = touchY;
+            float cx = getWidth() / 2, cy = getHeight() / 2;
+            paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(dp(2));
+            paint.setColor(editing ? 0xffb89aff : renderedState == PixelTriggerMonitorEngine.State.ARMED ? 0xff3cdc78
+                    : renderedState == PixelTriggerMonitorEngine.State.FIRED ? 0xffff505f : 0xffffb84d);
+            // Entire centre is transparent. Even the inner stroke edge stays well beyond the probes
+            // and the half-resolution bilinear filter footprint. FLAG_SECURE would black out the ROI.
+            float radius = Math.max(dp(settings.ringDp()) / 2f, diameter / 2f + dp(5));
+            canvas.drawCircle(cx, cy, radius, paint);
+            if (editing) {
+                paint.setStrokeWidth(1); paint.setColor(0xffeeeeee);
+                canvas.drawCircle(cx, cy, diameter / 2f, paint);
+            }
         }
     }
 }

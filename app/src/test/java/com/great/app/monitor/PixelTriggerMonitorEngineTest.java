@@ -15,7 +15,7 @@ public final class PixelTriggerMonitorEngineTest {
     @Test public void whiteClassifierMatchesPixelTriggerThresholds() {
         assertTrue(PixelTriggerMonitorEngine.isPackedWhite(0x00ffffff));
         assertTrue(PixelTriggerMonitorEngine.isPackedWhite(0x00d0d0d0));
-        assertFalse(PixelTriggerMonitorEngine.isPackedWhite(0x00a9ffffff)); // min channel < 170
+        assertFalse(PixelTriggerMonitorEngine.isPackedWhite(0x00a9ffff)); // min channel < 170
         assertFalse(PixelTriggerMonitorEngine.isPackedWhite(0x00ffaaaa)); // chroma > 60
         assertFalse(PixelTriggerMonitorEngine.isPackedWhite(0x00b0b0b0)); // luminance < 190
     }
@@ -57,6 +57,9 @@ public final class PixelTriggerMonitorEngineTest {
         assertEquals(PixelTriggerMonitorEngine.State.ARMED, engine.state());
 
         engine.process(sample(0x101010, 0x101010, 0x101010, 0xffffff, 0xffffff));
+        // Three dark probes and two white probes still average 111, above the fire gate.
+        assertEquals(PixelTriggerMonitorEngine.State.ARMED, engine.state());
+        engine.process(sample(0x101010, 0x101010, 0x101010, 0x101010, 0xffffff));
         assertEquals(PixelTriggerMonitorEngine.State.FIRED, engine.state());
     }
 

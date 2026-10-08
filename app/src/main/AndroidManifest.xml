@@ -50,6 +50,8 @@
             android:name=".ui.CapabilityOverlayService"
             android:exported="false" />
 
+        <activity android:name=".ui.MonitorPermissionActivity" android:exported="false" />
+
         <service
             android:name=".ui.FreezeMonitorService"
             android:exported="false"

@@ -9,6 +9,46 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.Assert.*;
 
 public final class FreezeCoreTest {
+    @Test public void monitorOffPreservesManualStateAndQueuedPackets() {
+        try (Harness h = new Harness()) {
+            h.state.set(Capability.FREEZE, true);
+            h.core.setHoldTrigger(true);
+            h.decide(TestPackets.udp(PacketDirection.INBOUND,443,100,0));
+            h.core.setHoldTrigger(false);
+            assertTrue(h.state.snapshot().enabled(Capability.FREEZE));
+            assertTrue(h.core.effectiveActive());
+            assertEquals(1,h.core.freezeQueueSize());
+        }
+    }
+    @Test public void manualOffDoesNotReleaseMonitorHold() {
+        try (Harness h = new Harness()) {
+            h.core.setHoldTrigger(true);
+            h.state.set(Capability.FREEZE,true);
+            h.state.set(Capability.FREEZE,false);
+            assertTrue(h.core.effectiveActive());
+            assertFalse(h.state.snapshot().enabled(Capability.FREEZE));
+            assertEquals(PacketDecision.HOLD,h.decide(TestPackets.udp(PacketDirection.INBOUND,443,100,0)));
+            h.core.setHoldTrigger(false);
+            assertFalse(h.core.effectiveActive());
+        }
+    }
+    @Test public void manualTimeoutLeavesVisualMonitorActive() throws Exception {
+        try (Harness h = new Harness()) {
+            CountDownLatch manualTimedOut = new CountDownLatch(1);
+            h.state.setListener((capability, enabled) -> {
+                h.core.onCapabilityChanged(capability,enabled);
+                if (!enabled) manualTimedOut.countDown();
+            });
+            h.core.setFreezeDurationSeconds(1);
+            h.core.setHoldTrigger(true);
+            h.state.set(Capability.FREEZE,true);
+            assertTrue(manualTimedOut.await(3,TimeUnit.SECONDS));
+            assertTrue(h.core.effectiveActive());
+            assertTrue(h.core.holdTriggerActive());
+            h.core.setHoldTrigger(false);
+            assertFalse(h.core.effectiveActive());
+        }
+    }
     private static final class Harness implements AutoCloseable {
         final CapabilityController state = new CapabilityController();
         final EngineDiagnostics diagnostics = new EngineDiagnostics();
