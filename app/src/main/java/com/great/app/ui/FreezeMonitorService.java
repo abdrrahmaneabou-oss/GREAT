@@ -78,6 +78,9 @@ public final class FreezeMonitorService extends Service {
     private boolean shuttingDown;
     private volatile int monitorColor = COLOR_NOT_READY;
     private Runnable freezeTimeout;
+    private volatile int captureWidth;
+    private volatile int captureHeight;
+    private volatile boolean captureResizePending;
 
     public static boolean isRunning() { return running; }
     public static boolean isEditing() { return editing; }
@@ -191,13 +194,13 @@ public final class FreezeMonitorService extends Service {
 
     private void createCapture() {
         Point size = screenSize();
-        int width = Math.max(1, size.x);
-        int height = Math.max(1, size.y);
+        captureWidth = Math.max(1, size.x);
+        captureHeight = Math.max(1, size.y);
         int density = getResources().getDisplayMetrics().densityDpi;
-        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2);
+        imageReader = ImageReader.newInstance(captureWidth, captureHeight, PixelFormat.RGBA_8888, 2);
         imageReader.setOnImageAvailableListener(this::onImageAvailable, captureHandler);
         virtualDisplay = projection.createVirtualDisplay(
-                "GREAT-Visual-Monitor", width, height, density,
+                "GREAT-Visual-Monitor", captureWidth, captureHeight, density,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 imageReader.getSurface(), null, captureHandler);
         if (virtualDisplay == null) throw new IllegalStateException("VirtualDisplay unavailable");
@@ -205,15 +208,68 @@ public final class FreezeMonitorService extends Service {
 
     private void onImageAvailable(ImageReader reader) {
         Image image = null;
+        boolean resizeAfterFrame = false;
         try {
             image = reader.acquireLatestImage();
-            if (image == null || editing || !running || !settings.enabled() || !settings.monitoringEnabled()) return;
+            if (image == null) return;
+
+            Point current = screenSize();
+            if ((current.x != captureWidth || current.y != captureHeight) && !captureResizePending) {
+                captureResizePending = true;
+                resizeAfterFrame = true;
+                return;
+            }
+
+            if (editing || !running || !settings.enabled() || !settings.monitoringEnabled()) return;
             PixelTriggerMonitorEngine.Sample sample = sampleImage(image);
             if (sample != null) engine.process(sample);
         } catch (Throwable ignored) {
             mainHandler.post(() -> setNotReady("Monitor frame unavailable"));
         } finally {
             if (image != null) image.close();
+            if (resizeAfterFrame) mainHandler.post(this::resizeCaptureToCurrentScreen);
+        }
+    }
+
+    /**
+     * MediaProjection on Android 14+ allows only one createVirtualDisplay() call per session.
+     * When a game rotates the device, keep that same VirtualDisplay and resize it onto a new
+     * ImageReader surface so probe coordinates remain aligned with the visible overlay.
+     */
+    private void resizeCaptureToCurrentScreen() {
+        try {
+            if (shuttingDown || projection == null || virtualDisplay == null) return;
+            Point size = screenSize();
+            int width = Math.max(1, size.x);
+            int height = Math.max(1, size.y);
+            if (width == captureWidth && height == captureHeight) return;
+
+            int density = getResources().getDisplayMetrics().densityDpi;
+            ImageReader replacement = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2);
+            replacement.setOnImageAvailableListener(this::onImageAvailable, captureHandler);
+
+            virtualDisplay.resize(width, height, density);
+            virtualDisplay.setSurface(replacement.getSurface());
+
+            ImageReader old = imageReader;
+            imageReader = replacement;
+            captureWidth = width;
+            captureHeight = height;
+            if (old != null) {
+                try { old.setOnImageAvailableListener(null, null); } catch (Throwable ignored) { }
+                try { old.close(); } catch (Throwable ignored) { }
+            }
+
+            engine.reset();
+            if (settings.monitoringEnabled() && !editing) {
+                monitoringActive = true;
+                GreatEngine.instance().freezeCore().setHoldTrigger(false);
+                setVisual(COLOR_WAITING, "Display changed • waiting for white");
+            }
+        } catch (Throwable e) {
+            setNotReady("Display resize failed");
+        } finally {
+            captureResizePending = false;
         }
     }
 
@@ -487,6 +543,7 @@ public final class FreezeMonitorService extends Service {
         running = false;
         editing = false;
         monitoringActive = false;
+        captureResizePending = false;
         cancelFreezeTimeout();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
         publicStatus = "Monitor stopped";
@@ -525,6 +582,7 @@ public final class FreezeMonitorService extends Service {
         running = false;
         editing = false;
         monitoringActive = false;
+        captureResizePending = false;
         cancelFreezeTimeout();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
         removeOverlay();
