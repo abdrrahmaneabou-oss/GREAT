@@ -3,6 +3,8 @@
     <!-- User-entered arbitrary package names must be resolvable to their installed UIDs. -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <queries>
         <package android:name="moe.shizuku.privileged.api" />
@@ -14,12 +16,10 @@
         android:theme="@style/Theme.Great"
         android:usesCleartextTraffic="false">
 
-        <!-- Required by Shizuku v13+ so the manager can discover this client and deliver its binder. -->
         <meta-data
             android:name="moe.shizuku.client.V3_SUPPORT"
             android:value="true" />
 
-        <!-- Keep this explicit instead of relying only on the dependency manifest merge. -->
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"
@@ -29,7 +29,7 @@
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
         <activity
-            android:name=".ui.MainActivity"
+            android:name=".ui.GreatMainActivity"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -51,7 +51,8 @@
             android:exported="false" />
 
         <service
-            android:name=".ui.FreezeTriggerOverlayService"
-            android:exported="false" />
+            android:name=".ui.FreezeMonitorService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
     </application>
 </manifest>
