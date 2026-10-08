@@ -28,7 +28,9 @@ public final class FreezeCore implements AutoCloseable {
     private OutputSink sink;
     private ScheduledFuture<?> timeout;
     private int durationSeconds = DEFAULT_DURATION_SECONDS;
+    // "enabled" is the ordinary/manual Freeze state controlled by CapabilityController.
     private boolean enabled;
+    // holdTrigger is independent and belongs only to the passive circle trigger.
     private boolean holdTrigger;
     private boolean closed;
     private long generation;
@@ -55,8 +57,7 @@ public final class FreezeCore implements AutoCloseable {
         int remotePort = m.sourcePort();
         if (remotePort >= 7000 && remotePort <= 10000) return PacketDecision.PASS;
         synchronized (lock) {
-            if (closed || !enabled || !state.enabled(Capability.FREEZE)
-                    || !shouldHold(udpLength - 8)) return PacketDecision.PASS;
+            if (closed || !effectiveLocked() || !shouldHold(udpLength - 8)) return PacketDecision.PASS;
             if (buffer.size() == CAPACITY) {
                 buffer.removeFirst();
                 diagnostics.schedulerRejected();
@@ -78,45 +79,69 @@ public final class FreezeCore implements AutoCloseable {
     }
 
     public void onCapabilityChanged(Capability capability, boolean value) {
+        if (capability != Capability.FREEZE) return;
         synchronized (lock) {
             if (closed) return;
+            boolean wasEffective = effectiveLocked();
             enabled = value;
+
             if (timeout != null) timeout.cancel(false);
             timeout = null;
             if (value) {
+                // Manual Freeze keeps its own auto-release timer. The circle trigger does not
+                // cancel or own this timer; if the timer expires while a finger is held, the
+                // trigger remains effective until that finger is released.
+                long activation = controller.snapshot().revision();
+                timeout = timers.schedule(() -> controller.setIfRevision(
+                        Capability.FREEZE, false, activation), durationSeconds, TimeUnit.SECONDS);
+            }
+
+            boolean nowEffective = effectiveLocked();
+            if (!wasEffective && nowEffective) {
                 buffer.clear();
-                if (!holdTrigger) {
-                    long activation = controller.snapshot().revision();
-                    timeout = timers.schedule(() -> controller.setIfRevision(
-                            Capability.FREEZE, false, activation), durationSeconds, TimeUnit.SECONDS);
-                }
-            } else if (!buffer.isEmpty()) {
-                ArrayList<PacketEnvelope> all = new ArrayList<>(buffer);
-                buffer.clear();
-                long session = generation;
-                releases.execute(() -> release(all, session));
+            } else if (wasEffective && !nowEffective) {
+                releaseBufferedLocked();
             }
         }
     }
 
     /**
-     * Hold-mode Freeze is tied directly to the user's trigger finger. Auto-release is suspended
-     * while the trigger is held, and lifting/canceling the same gesture releases immediately.
+     * Circle hold state. This never toggles CapabilityController, so manual Freeze remains fully
+     * independent. DOWN inside the trigger sets this true; UP/CANCEL for that same finger sets it
+     * false. Freeze remains effective while either manual Freeze or the circle hold is active.
      */
     public void setHoldTrigger(boolean active) {
         synchronized (lock) {
-            if (closed) return;
+            if (closed || holdTrigger == active) return;
+            boolean wasEffective = effectiveLocked();
             holdTrigger = active;
-            if (active && timeout != null) {
-                timeout.cancel(false);
-                timeout = null;
+            boolean nowEffective = effectiveLocked();
+            if (!wasEffective && nowEffective) {
+                buffer.clear();
+            } else if (wasEffective && !nowEffective) {
+                releaseBufferedLocked();
             }
         }
-        controller.set(Capability.FREEZE, active);
     }
 
     public boolean holdTriggerActive() {
         synchronized (lock) { return holdTrigger; }
+    }
+
+    public boolean effectiveActive() {
+        synchronized (lock) { return effectiveLocked(); }
+    }
+
+    private boolean effectiveLocked() {
+        return enabled || holdTrigger;
+    }
+
+    private void releaseBufferedLocked() {
+        if (buffer.isEmpty()) return;
+        ArrayList<PacketEnvelope> all = new ArrayList<>(buffer);
+        buffer.clear();
+        long session = generation;
+        releases.execute(() -> release(all, session));
     }
 
     private void release(ArrayList<PacketEnvelope> all, long session) {
