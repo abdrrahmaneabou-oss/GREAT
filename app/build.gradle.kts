@@ -10,12 +10,16 @@ android {
         applicationId = "com.great.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.4.0-shizuku"
+        versionCode = 8
+        versionName = "0.5.0-trigger-engine"
         testInstrumentationRunner = "android.test.InstrumentationTestRunner"
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
+    }
+
+    buildFeatures {
+        aidl = true
     }
 
     buildTypes {
