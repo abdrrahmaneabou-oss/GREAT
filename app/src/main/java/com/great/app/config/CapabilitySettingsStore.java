@@ -11,6 +11,11 @@ public final class CapabilitySettingsStore {
     private static final String FREEZE_SECONDS = "freeze_seconds";
     private static final String FREEZE_PAYLOAD_MIN = "freeze_payload_min";
     private static final String FREEZE_PAYLOAD_MAX = "freeze_payload_max";
+    private static final String FREEZE_PAYLOAD_RANDOM_ENABLED = "freeze_payload_random_enabled";
+    private static final String FREEZE_PAYLOAD_MIN_FROM = "freeze_payload_min_from";
+    private static final String FREEZE_PAYLOAD_MIN_TO = "freeze_payload_min_to";
+    private static final String FREEZE_PAYLOAD_MAX_FROM = "freeze_payload_max_from";
+    private static final String FREEZE_PAYLOAD_MAX_TO = "freeze_payload_max_to";
 
     private final SharedPreferences prefs;
 
@@ -52,10 +57,60 @@ public final class CapabilitySettingsStore {
                 .apply();
     }
 
+    public boolean freezePayloadRandomEnabled() {
+        return prefs.getBoolean(FREEZE_PAYLOAD_RANDOM_ENABLED, false);
+    }
+
+    public void setFreezePayloadRandomEnabled(boolean enabled) {
+        prefs.edit().putBoolean(FREEZE_PAYLOAD_RANDOM_ENABLED, enabled).apply();
+    }
+
+    public int freezePayloadMinFrom() { return randomPayloadRange()[0]; }
+    public int freezePayloadMinTo() { return randomPayloadRange()[1]; }
+    public int freezePayloadMaxFrom() { return randomPayloadRange()[2]; }
+    public int freezePayloadMaxTo() { return randomPayloadRange()[3]; }
+
+    public void setFreezePayloadRandomRange(int minFrom, int minTo, int maxFrom, int maxTo) {
+        if (!validRandomPayloadRange(minFrom, minTo, maxFrom, maxTo)) {
+            throw new IllegalArgumentException(
+                    "Random payload ranges must stay inside 20..500 and minimum range must remain below maximum range");
+        }
+        prefs.edit()
+                .putInt(FREEZE_PAYLOAD_MIN_FROM, minFrom)
+                .putInt(FREEZE_PAYLOAD_MIN_TO, minTo)
+                .putInt(FREEZE_PAYLOAD_MAX_FROM, maxFrom)
+                .putInt(FREEZE_PAYLOAD_MAX_TO, maxTo)
+                .apply();
+    }
+
+    private int[] randomPayloadRange() {
+        int minFrom = prefs.getInt(FREEZE_PAYLOAD_MIN_FROM, FreezeCore.DEFAULT_RANDOM_PAYLOAD_MIN_FROM);
+        int minTo = prefs.getInt(FREEZE_PAYLOAD_MIN_TO, FreezeCore.DEFAULT_RANDOM_PAYLOAD_MIN_TO);
+        int maxFrom = prefs.getInt(FREEZE_PAYLOAD_MAX_FROM, FreezeCore.DEFAULT_RANDOM_PAYLOAD_MAX_FROM);
+        int maxTo = prefs.getInt(FREEZE_PAYLOAD_MAX_TO, FreezeCore.DEFAULT_RANDOM_PAYLOAD_MAX_TO);
+        if (!validRandomPayloadRange(minFrom, minTo, maxFrom, maxTo)) {
+            return new int[]{
+                    FreezeCore.DEFAULT_RANDOM_PAYLOAD_MIN_FROM,
+                    FreezeCore.DEFAULT_RANDOM_PAYLOAD_MIN_TO,
+                    FreezeCore.DEFAULT_RANDOM_PAYLOAD_MAX_FROM,
+                    FreezeCore.DEFAULT_RANDOM_PAYLOAD_MAX_TO
+            };
+        }
+        return new int[]{minFrom, minTo, maxFrom, maxTo};
+    }
+
     private static boolean validPayloadRange(int min, int max) {
         return min >= FreezeCore.MIN_PAYLOAD_LIMIT
                 && max <= FreezeCore.MAX_PAYLOAD_LIMIT
                 && min < max;
+    }
+
+    private static boolean validRandomPayloadRange(int minFrom, int minTo, int maxFrom, int maxTo) {
+        return minFrom >= FreezeCore.MIN_PAYLOAD_LIMIT
+                && minFrom <= minTo
+                && minTo < maxFrom
+                && maxFrom <= maxTo
+                && maxTo <= FreezeCore.MAX_PAYLOAD_LIMIT;
     }
 
     private static int clampSeconds(int seconds) {
