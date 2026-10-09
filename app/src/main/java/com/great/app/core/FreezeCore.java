@@ -18,6 +18,10 @@ public final class FreezeCore implements AutoCloseable {
     public static final int DEFAULT_DURATION_SECONDS = 5;
     public static final int MIN_DURATION_SECONDS = 1;
     public static final int MAX_DURATION_SECONDS = 10;
+    public static final int MIN_PAYLOAD_LIMIT = 20;
+    public static final int MAX_PAYLOAD_LIMIT = 500;
+    public static final int DEFAULT_PAYLOAD_MIN = 20;
+    public static final int DEFAULT_PAYLOAD_MAX = 500;
 
     private static final int MIN_RELEASE_BURST = 1;
     private static final int MAX_RELEASE_BURST = 4;
@@ -43,6 +47,8 @@ public final class FreezeCore implements AutoCloseable {
     private OutputSink sink;
     private ScheduledFuture<?> timeout;
     private int durationSeconds = DEFAULT_DURATION_SECONDS;
+    private int payloadMin = DEFAULT_PAYLOAD_MIN;
+    private int payloadMax = DEFAULT_PAYLOAD_MAX;
 
     // Manual Freeze is controlled only by CapabilityController / the visible Freeze button.
     private boolean manualEnabled;
@@ -97,11 +103,21 @@ public final class FreezeCore implements AutoCloseable {
     }
 
     boolean shouldHold(int payloadLength) {
-        int lower = 20 + rng.nextInt(10);
-        int upper = 450 + rng.nextInt(50);
-        if (lower >= upper) lower = upper - 1;
-        return payloadLength > lower && payloadLength < upper;
+        return payloadLength > payloadMin && payloadLength < payloadMax;
     }
+
+    public void setPayloadRange(int min, int max) {
+        if (min < MIN_PAYLOAD_LIMIT || max > MAX_PAYLOAD_LIMIT || min >= max) {
+            throw new IllegalArgumentException("Payload range must be 20..500 bytes and min must be less than max");
+        }
+        synchronized (lock) {
+            payloadMin = min;
+            payloadMax = max;
+        }
+    }
+
+    public int payloadMin() { synchronized (lock) { return payloadMin; } }
+    public int payloadMax() { synchronized (lock) { return payloadMax; } }
 
     public void onCapabilityChanged(Capability capability, boolean value) {
         if (capability != Capability.FREEZE) return;
