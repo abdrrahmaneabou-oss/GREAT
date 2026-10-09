@@ -22,6 +22,10 @@ public final class FreezeCore implements AutoCloseable {
     public static final int MAX_PAYLOAD_LIMIT = 500;
     public static final int DEFAULT_PAYLOAD_MIN = 20;
     public static final int DEFAULT_PAYLOAD_MAX = 500;
+    public static final int DEFAULT_RANDOM_PAYLOAD_MIN_FROM = 20;
+    public static final int DEFAULT_RANDOM_PAYLOAD_MIN_TO = 29;
+    public static final int DEFAULT_RANDOM_PAYLOAD_MAX_FROM = 450;
+    public static final int DEFAULT_RANDOM_PAYLOAD_MAX_TO = 499;
 
     private static final int MIN_RELEASE_BURST = 1;
     private static final int MAX_RELEASE_BURST = 4;
@@ -47,8 +51,18 @@ public final class FreezeCore implements AutoCloseable {
     private OutputSink sink;
     private ScheduledFuture<?> timeout;
     private int durationSeconds = DEFAULT_DURATION_SECONDS;
+
+    // Saved fixed-mode bounds.
+    private int fixedPayloadMin = DEFAULT_PAYLOAD_MIN;
+    private int fixedPayloadMax = DEFAULT_PAYLOAD_MAX;
+    // Active bounds used by shouldHold() for the current Freeze cycle.
     private int payloadMin = DEFAULT_PAYLOAD_MIN;
     private int payloadMax = DEFAULT_PAYLOAD_MAX;
+    private boolean randomizedPayloadRangeEnabled;
+    private int randomPayloadMinFrom = DEFAULT_RANDOM_PAYLOAD_MIN_FROM;
+    private int randomPayloadMinTo = DEFAULT_RANDOM_PAYLOAD_MIN_TO;
+    private int randomPayloadMaxFrom = DEFAULT_RANDOM_PAYLOAD_MAX_FROM;
+    private int randomPayloadMaxTo = DEFAULT_RANDOM_PAYLOAD_MAX_TO;
 
     // Manual Freeze is controlled only by CapabilityController / the visible Freeze button.
     private boolean manualEnabled;
@@ -111,9 +125,40 @@ public final class FreezeCore implements AutoCloseable {
             throw new IllegalArgumentException("Payload range must be 20..500 bytes and min must be less than max");
         }
         synchronized (lock) {
-            payloadMin = min;
-            payloadMax = max;
+            fixedPayloadMin = min;
+            fixedPayloadMax = max;
+            if (!randomizedPayloadRangeEnabled) {
+                payloadMin = min;
+                payloadMax = max;
+            }
         }
+    }
+
+    public void setRandomPayloadRange(int minFrom, int minTo, int maxFrom, int maxTo) {
+        if (!validRandomPayloadRange(minFrom, minTo, maxFrom, maxTo)) {
+            throw new IllegalArgumentException(
+                    "Random payload ranges must stay inside 20..500 and minimum range must remain below maximum range");
+        }
+        synchronized (lock) {
+            randomPayloadMinFrom = minFrom;
+            randomPayloadMinTo = minTo;
+            randomPayloadMaxFrom = maxFrom;
+            randomPayloadMaxTo = maxTo;
+        }
+    }
+
+    public void setRandomPayloadRangeEnabled(boolean enabled) {
+        synchronized (lock) {
+            randomizedPayloadRangeEnabled = enabled;
+            if (!enabled) {
+                payloadMin = fixedPayloadMin;
+                payloadMax = fixedPayloadMax;
+            }
+        }
+    }
+
+    public boolean randomPayloadRangeEnabled() {
+        synchronized (lock) { return randomizedPayloadRangeEnabled; }
     }
 
     public int payloadMin() { synchronized (lock) { return payloadMin; } }
@@ -137,6 +182,7 @@ public final class FreezeCore implements AutoCloseable {
             boolean nowEffective = effectiveLocked();
             if (!wasEffective && nowEffective) {
                 buffer.clear();
+                choosePayloadRangeForCycleLocked();
                 startRampLocked();
             } else if (wasEffective && !nowEffective) {
                 clearRampLocked();
@@ -157,6 +203,7 @@ public final class FreezeCore implements AutoCloseable {
             boolean nowEffective = effectiveLocked();
             if (!wasEffective && nowEffective) {
                 buffer.clear();
+                choosePayloadRangeForCycleLocked();
                 startRampLocked();
             } else if (wasEffective && !nowEffective) {
                 clearRampLocked();
@@ -175,6 +222,28 @@ public final class FreezeCore implements AutoCloseable {
 
     private boolean effectiveLocked() {
         return manualEnabled || visualMonitorHold;
+    }
+
+    private void choosePayloadRangeForCycleLocked() {
+        if (!randomizedPayloadRangeEnabled) {
+            payloadMin = fixedPayloadMin;
+            payloadMax = fixedPayloadMax;
+            return;
+        }
+        payloadMin = randomInclusiveLocked(randomPayloadMinFrom, randomPayloadMinTo);
+        payloadMax = randomInclusiveLocked(randomPayloadMaxFrom, randomPayloadMaxTo);
+    }
+
+    private int randomInclusiveLocked(int from, int to) {
+        return from == to ? from : from + rng.nextInt(to - from + 1);
+    }
+
+    private static boolean validRandomPayloadRange(int minFrom, int minTo, int maxFrom, int maxTo) {
+        return minFrom >= MIN_PAYLOAD_LIMIT
+                && minFrom <= minTo
+                && minTo < maxFrom
+                && maxFrom <= maxTo
+                && maxTo <= MAX_PAYLOAD_LIMIT;
     }
 
     private void startRampLocked() {
@@ -288,6 +357,10 @@ public final class FreezeCore implements AutoCloseable {
             if (timeout != null) timeout.cancel(false);
             timeout = null;
             buffer.clear();
+            if (!randomizedPayloadRangeEnabled) {
+                payloadMin = fixedPayloadMin;
+                payloadMax = fixedPayloadMax;
+            }
         }
     }
 
