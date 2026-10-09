@@ -29,6 +29,7 @@ import com.great.app.config.MonitorSettingsStore;
 import com.great.app.config.SecureConfigStore;
 import com.great.app.config.TargetAppsStore;
 import com.great.app.core.Capability;
+import com.great.app.core.FreezeCore;
 import com.great.app.core.GreatEngine;
 import com.great.app.core.TargetPackages;
 import com.great.app.vpn.GreatVpnService;
@@ -55,12 +56,15 @@ public final class GreatMainActivity extends Activity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private TargetAppsStore targetStore;
     private MonitorSettingsStore monitorSettings;
+    private CapabilitySettingsStore capabilitySettings;
     private MediaProjectionManager projectionManager;
     private TextView configState;
     private TextView targetHeading;
     private TextView robotTimeoutValue;
     private LinearLayout targetList;
     private EditText packageInput;
+    private EditText payloadMinInput;
+    private EditText payloadMaxInput;
     private boolean overlayPending;
     private boolean monitorCapturePending;
     private boolean monitorEditAfterStart;
@@ -70,8 +74,11 @@ public final class GreatMainActivity extends Activity {
         super.onCreate(state);
         targetStore = new TargetAppsStore(this);
         monitorSettings = new MonitorSettingsStore(this);
+        capabilitySettings = new CapabilitySettingsStore(this);
         projectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-        GreatEngine.instance().freezeCore().setFreezeDurationSeconds(new CapabilitySettingsStore(this).freezeSeconds());
+        FreezeCore freezeCore = GreatEngine.instance().freezeCore();
+        freezeCore.setFreezeDurationSeconds(capabilitySettings.freezeSeconds());
+        freezeCore.setPayloadRange(capabilitySettings.freezePayloadMin(), capabilitySettings.freezePayloadMax());
         setContentView(buildContent());
         refreshConfig();
         handleAction(getIntent());
@@ -117,6 +124,7 @@ public final class GreatMainActivity extends Activity {
         add(root, configCard(), 26);
         add(root, vpnCard(), 14);
         add(root, targetCard(), 14);
+        add(root, packetRangeCard(), 14);
         add(root, robotTimeoutCard(), 14);
         add(root, showCirclesCard(), 14);
         add(root, hideCirclesCard(), 14);
@@ -148,6 +156,86 @@ public final class GreatMainActivity extends Activity {
         stop.setOnClickListener(v -> stopGreat());
         add(card, stop, 10);
         return card;
+    }
+
+    private View packetRangeCard() {
+        LinearLayout card = card();
+        add(card, text("PACKET RANGE", 11, ACCENT, true), 0);
+        add(card, text("Freeze only eligible INBOUND UDP payloads inside the saved byte thresholds.",
+                12, MUTED, false), 8);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+
+        payloadMinInput = numericInput("Minimum", capabilitySettings.freezePayloadMin());
+        payloadMaxInput = numericInput("Maximum", capabilitySettings.freezePayloadMax());
+        row.addView(payloadMinInput, new LinearLayout.LayoutParams(0, dp(54), 1f));
+        LinearLayout.LayoutParams maxParams = new LinearLayout.LayoutParams(0, dp(54), 1f);
+        maxParams.leftMargin = dp(10);
+        row.addView(payloadMaxInput, maxParams);
+        add(card, row, 14);
+
+        add(card, text("Minimum ≥ 20 bytes   •   Maximum ≤ 500 bytes   •   Minimum < Maximum",
+                11, MUTED, false), 8);
+        TextView save = button("SAVE", true);
+        save.setOnClickListener(v -> savePayloadRange());
+        add(card, save, 14);
+        return card;
+    }
+
+    private EditText numericInput(String hint, int value) {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setTextColor(TEXT);
+        input.setHintTextColor(MUTED);
+        input.setHint(hint);
+        input.setText(String.valueOf(value));
+        input.setInputType(InputType.TYPE_CLASS_NUMBER);
+        input.setPadding(dp(12), 0, dp(12), 0);
+        input.setBackground(round(0xff202431, 14));
+        return input;
+    }
+
+    private void savePayloadRange() {
+        if (payloadMinInput == null || payloadMaxInput == null) return;
+        String minText = payloadMinInput.getText().toString().trim();
+        String maxText = payloadMaxInput.getText().toString().trim();
+        if (minText.isEmpty()) {
+            payloadMinInput.setError("Minimum is required");
+            return;
+        }
+        if (maxText.isEmpty()) {
+            payloadMaxInput.setError("Maximum is required");
+            return;
+        }
+
+        final int min;
+        final int max;
+        try {
+            min = Integer.parseInt(minText);
+            max = Integer.parseInt(maxText);
+        } catch (NumberFormatException e) {
+            toast("Enter valid numeric payload thresholds");
+            return;
+        }
+
+        if (min < FreezeCore.MIN_PAYLOAD_LIMIT) {
+            payloadMinInput.setError("Minimum must be at least 20 bytes");
+            return;
+        }
+        if (max > FreezeCore.MAX_PAYLOAD_LIMIT) {
+            payloadMaxInput.setError("Maximum must not exceed 500 bytes");
+            return;
+        }
+        if (min >= max) {
+            payloadMinInput.setError("Minimum must be less than maximum");
+            return;
+        }
+
+        capabilitySettings.setFreezePayloadRange(min, max);
+        GreatEngine.instance().freezeCore().setPayloadRange(min, max);
+        toast("Packet range saved: " + min + "–" + max + " bytes");
     }
 
     private View robotTimeoutCard() {
@@ -315,9 +403,6 @@ public final class GreatMainActivity extends Activity {
         }
         Intent captureIntent;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            // GREAT must observe the target app after the user leaves GREAT. Request the entire
-            // default display instead of Android 14+'s app-sharing mode, which would only capture
-            // one selected application and make the visual sensor blind inside the game.
             MediaProjectionConfig config = MediaProjectionConfig.createConfigForDefaultDisplay();
             captureIntent = projectionManager.createScreenCaptureIntent(config);
         } else {
