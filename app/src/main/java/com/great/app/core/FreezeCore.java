@@ -18,12 +18,20 @@ public final class FreezeCore implements AutoCloseable {
     public static final int DEFAULT_DURATION_SECONDS = 5;
     public static final int MIN_DURATION_SECONDS = 1;
     public static final int MAX_DURATION_SECONDS = 10;
+
     private static final int MIN_RELEASE_BURST = 1;
     private static final int MAX_RELEASE_BURST = 4;
     private static final int MIN_RELEASE_DELAY_MS = 5;
     private static final int MAX_RELEASE_DELAY_MS = 45;
     private static final int MIN_RELEASE_DROP_PERCENT = 12;
     private static final int MAX_RELEASE_DROP_PERCENT = 23;
+
+    private static final int MIN_RAMP_DURATION_MS = 70;
+    private static final int MAX_RAMP_DURATION_MS = 130;
+    private static final int MIN_RAMP_STAGE1_HOLD_PERCENT = 20;
+    private static final int MAX_RAMP_STAGE1_HOLD_PERCENT = 40;
+    private static final int MIN_RAMP_STAGE2_HOLD_PERCENT = 55;
+    private static final int MAX_RAMP_STAGE2_HOLD_PERCENT = 75;
 
     private final CapabilityController controller;
     private final EngineDiagnostics diagnostics;
@@ -42,6 +50,14 @@ public final class FreezeCore implements AutoCloseable {
     private boolean visualMonitorHold;
     private boolean closed;
     private long generation;
+
+    // A new ramp is created only when effective Freeze transitions OFF -> ON. It does not alter
+    // packet eligibility rules; it only decides whether an otherwise eligible packet is held during
+    // the first 70..130 ms. After the window expires, normal full Freeze resumes automatically.
+    private long rampStartedNanos;
+    private long rampDurationNanos;
+    private int rampStage1HoldPercent;
+    private int rampStage2HoldPercent;
 
     public FreezeCore(CapabilityController controller, EngineDiagnostics diagnostics) {
         this(controller, diagnostics, new Random());
@@ -67,6 +83,7 @@ public final class FreezeCore implements AutoCloseable {
         if (remotePort >= 7000 && remotePort <= 10000) return PacketDecision.PASS;
         synchronized (lock) {
             if (closed || !effectiveLocked() || !shouldHold(udpLength - 8)) return PacketDecision.PASS;
+            if (!rampAllowsHoldLocked(System.nanoTime())) return PacketDecision.PASS;
             if (buffer.size() == CAPACITY) {
                 buffer.removeFirst();
                 diagnostics.schedulerRejected();
@@ -104,7 +121,9 @@ public final class FreezeCore implements AutoCloseable {
             boolean nowEffective = effectiveLocked();
             if (!wasEffective && nowEffective) {
                 buffer.clear();
+                startRampLocked();
             } else if (wasEffective && !nowEffective) {
+                clearRampLocked();
                 releaseBufferedLocked();
             }
         }
@@ -122,7 +141,9 @@ public final class FreezeCore implements AutoCloseable {
             boolean nowEffective = effectiveLocked();
             if (!wasEffective && nowEffective) {
                 buffer.clear();
+                startRampLocked();
             } else if (wasEffective && !nowEffective) {
+                clearRampLocked();
                 releaseBufferedLocked();
             }
         }
@@ -138,6 +159,36 @@ public final class FreezeCore implements AutoCloseable {
 
     private boolean effectiveLocked() {
         return manualEnabled || visualMonitorHold;
+    }
+
+    private void startRampLocked() {
+        int durationMs = MIN_RAMP_DURATION_MS
+                + rng.nextInt(MAX_RAMP_DURATION_MS - MIN_RAMP_DURATION_MS + 1);
+        rampStartedNanos = System.nanoTime();
+        rampDurationNanos = TimeUnit.MILLISECONDS.toNanos(durationMs);
+        rampStage1HoldPercent = MIN_RAMP_STAGE1_HOLD_PERCENT
+                + rng.nextInt(MAX_RAMP_STAGE1_HOLD_PERCENT - MIN_RAMP_STAGE1_HOLD_PERCENT + 1);
+        rampStage2HoldPercent = MIN_RAMP_STAGE2_HOLD_PERCENT
+                + rng.nextInt(MAX_RAMP_STAGE2_HOLD_PERCENT - MIN_RAMP_STAGE2_HOLD_PERCENT + 1);
+    }
+
+    private void clearRampLocked() {
+        rampStartedNanos = 0L;
+        rampDurationNanos = 0L;
+        rampStage1HoldPercent = 0;
+        rampStage2HoldPercent = 0;
+    }
+
+    private boolean rampAllowsHoldLocked(long nowNanos) {
+        if (rampDurationNanos <= 0L || rampStartedNanos <= 0L) return true;
+        long elapsed = nowNanos - rampStartedNanos;
+        if (elapsed < 0L || elapsed >= rampDurationNanos) {
+            clearRampLocked();
+            return true;
+        }
+        long firstHalf = rampDurationNanos / 2L;
+        int holdPercent = elapsed < firstHalf ? rampStage1HoldPercent : rampStage2HoldPercent;
+        return rng.nextInt(100) < holdPercent;
     }
 
     private void releaseBufferedLocked() {
@@ -216,6 +267,7 @@ public final class FreezeCore implements AutoCloseable {
         synchronized (lock) {
             manualEnabled = false;
             visualMonitorHold = false;
+            clearRampLocked();
             generation++;
             if (timeout != null) timeout.cancel(false);
             timeout = null;
