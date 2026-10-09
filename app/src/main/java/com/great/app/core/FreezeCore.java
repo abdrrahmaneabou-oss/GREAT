@@ -2,6 +2,7 @@ package com.great.app.core;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Objects;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
@@ -21,6 +22,8 @@ public final class FreezeCore implements AutoCloseable {
     private static final int MAX_RELEASE_BURST = 4;
     private static final int MIN_RELEASE_DELAY_MS = 5;
     private static final int MAX_RELEASE_DELAY_MS = 45;
+    private static final int MIN_RELEASE_DROP_PERCENT = 12;
+    private static final int MAX_RELEASE_DROP_PERCENT = 23;
 
     private final CapabilityController controller;
     private final EngineDiagnostics diagnostics;
@@ -146,6 +149,20 @@ public final class FreezeCore implements AutoCloseable {
     }
 
     private void release(ArrayList<PacketEnvelope> all, long session) {
+        if (all.isEmpty()) return;
+
+        int dropPercent = MIN_RELEASE_DROP_PERCENT
+                + rng.nextInt(MAX_RELEASE_DROP_PERCENT - MIN_RELEASE_DROP_PERCENT + 1);
+        int dropCount = Math.round(all.size() * (dropPercent / 100f));
+        dropCount = Math.max(0, Math.min(dropCount, all.size()));
+        if (dropCount > 0) {
+            int maxStart = all.size() - dropCount;
+            int dropStart = maxStart == 0 ? 0 : rng.nextInt(maxStart + 1);
+            all.subList(dropStart, dropStart + dropCount).clear();
+        }
+
+        if (all.size() > 1) Collections.shuffle(all, rng);
+
         int index = 0;
         while (index < all.size()) {
             int burstSize = MIN_RELEASE_BURST + rng.nextInt(MAX_RELEASE_BURST - MIN_RELEASE_BURST + 1);
