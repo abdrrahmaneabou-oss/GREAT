@@ -20,6 +20,7 @@ import android.view.View;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -65,6 +66,13 @@ public final class GreatMainActivity extends Activity {
     private EditText packageInput;
     private EditText payloadMinInput;
     private EditText payloadMaxInput;
+    private EditText payloadMinFromInput;
+    private EditText payloadMinToInput;
+    private EditText payloadMaxFromInput;
+    private EditText payloadMaxToInput;
+    private LinearLayout payloadFixedInputs;
+    private LinearLayout payloadRandomInputs;
+    private Switch payloadRandomSwitch;
     private boolean overlayPending;
     private boolean monitorCapturePending;
     private boolean monitorEditAfterStart;
@@ -76,12 +84,20 @@ public final class GreatMainActivity extends Activity {
         monitorSettings = new MonitorSettingsStore(this);
         capabilitySettings = new CapabilitySettingsStore(this);
         projectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-        FreezeCore freezeCore = GreatEngine.instance().freezeCore();
-        freezeCore.setFreezeDurationSeconds(capabilitySettings.freezeSeconds());
-        freezeCore.setPayloadRange(capabilitySettings.freezePayloadMin(), capabilitySettings.freezePayloadMax());
+        applySavedPayloadSettings();
+        GreatEngine.instance().freezeCore().setFreezeDurationSeconds(capabilitySettings.freezeSeconds());
         setContentView(buildContent());
         refreshConfig();
         handleAction(getIntent());
+    }
+
+    private void applySavedPayloadSettings() {
+        FreezeCore core = GreatEngine.instance().freezeCore();
+        core.setPayloadRange(capabilitySettings.freezePayloadMin(), capabilitySettings.freezePayloadMax());
+        core.setRandomPayloadRange(
+                capabilitySettings.freezePayloadMinFrom(), capabilitySettings.freezePayloadMinTo(),
+                capabilitySettings.freezePayloadMaxFrom(), capabilitySettings.freezePayloadMaxTo());
+        core.setRandomPayloadRangeEnabled(capabilitySettings.freezePayloadRandomEnabled());
     }
 
     @Override protected void onNewIntent(Intent intent) {
@@ -164,24 +180,64 @@ public final class GreatMainActivity extends Activity {
         add(card, text("Freeze only eligible INBOUND UDP payloads inside the saved byte thresholds.",
                 12, MUTED, false), 8);
 
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout toggleRow = new LinearLayout(this);
+        toggleRow.setOrientation(LinearLayout.HORIZONTAL);
+        toggleRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView toggleLabel = text("RANDOM RANGE PER FREEZE", 13, TEXT, true);
+        toggleRow.addView(toggleLabel, new LinearLayout.LayoutParams(0, -2, 1f));
+        payloadRandomSwitch = new Switch(this);
+        payloadRandomSwitch.setChecked(capabilitySettings.freezePayloadRandomEnabled());
+        toggleRow.addView(payloadRandomSwitch, new LinearLayout.LayoutParams(-2, -2));
+        add(card, toggleRow, 14);
 
+        payloadFixedInputs = column();
+        LinearLayout fixedRow = inputRow();
         payloadMinInput = numericInput("Minimum", capabilitySettings.freezePayloadMin());
         payloadMaxInput = numericInput("Maximum", capabilitySettings.freezePayloadMax());
-        row.addView(payloadMinInput, new LinearLayout.LayoutParams(0, dp(54), 1f));
-        LinearLayout.LayoutParams maxParams = new LinearLayout.LayoutParams(0, dp(54), 1f);
-        maxParams.leftMargin = dp(10);
-        row.addView(payloadMaxInput, maxParams);
-        add(card, row, 14);
-
-        add(card, text("Minimum ≥ 20 bytes   •   Maximum ≤ 500 bytes   •   Minimum < Maximum",
+        addTwoInputs(fixedRow, payloadMinInput, payloadMaxInput);
+        add(payloadFixedInputs, fixedRow, 0);
+        add(payloadFixedInputs, text("Minimum ≥ 20 bytes   •   Maximum ≤ 500 bytes   •   Minimum < Maximum",
                 11, MUTED, false), 8);
+        add(card, payloadFixedInputs, 14);
+
+        payloadRandomInputs = column();
+        LinearLayout minimumRow = inputRow();
+        payloadMinFromInput = numericInput("Min From", capabilitySettings.freezePayloadMinFrom());
+        payloadMinToInput = numericInput("Min To", capabilitySettings.freezePayloadMinTo());
+        addTwoInputs(minimumRow, payloadMinFromInput, payloadMinToInput);
+        add(payloadRandomInputs, minimumRow, 0);
+
+        LinearLayout maximumRow = inputRow();
+        payloadMaxFromInput = numericInput("Max From", capabilitySettings.freezePayloadMaxFrom());
+        payloadMaxToInput = numericInput("Max To", capabilitySettings.freezePayloadMaxTo());
+        addTwoInputs(maximumRow, payloadMaxFromInput, payloadMaxToInput);
+        add(payloadRandomInputs, maximumRow, 10);
+        add(payloadRandomInputs, text(
+                "Each Freeze cycle picks one minimum and one maximum. Values must stay inside 20–500 and Min To < Max From.",
+                11, MUTED, false), 8);
+        add(card, payloadRandomInputs, 14);
+
+        updatePayloadRangeModeVisibility(payloadRandomSwitch.isChecked());
+        payloadRandomSwitch.setOnCheckedChangeListener((buttonView, checked) -> setRandomPayloadMode(checked));
+
         TextView save = button("SAVE", true);
         save.setOnClickListener(v -> savePayloadRange());
         add(card, save, 14);
         return card;
+    }
+
+    private LinearLayout inputRow() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        return row;
+    }
+
+    private void addTwoInputs(LinearLayout row, EditText first, EditText second) {
+        row.addView(first, new LinearLayout.LayoutParams(0, dp(54), 1f));
+        LinearLayout.LayoutParams secondParams = new LinearLayout.LayoutParams(0, dp(54), 1f);
+        secondParams.leftMargin = dp(10);
+        row.addView(second, secondParams);
     }
 
     private EditText numericInput(String hint, int value) {
@@ -197,28 +253,37 @@ public final class GreatMainActivity extends Activity {
         return input;
     }
 
-    private void savePayloadRange() {
-        if (payloadMinInput == null || payloadMaxInput == null) return;
-        String minText = payloadMinInput.getText().toString().trim();
-        String maxText = payloadMaxInput.getText().toString().trim();
-        if (minText.isEmpty()) {
-            payloadMinInput.setError("Minimum is required");
-            return;
-        }
-        if (maxText.isEmpty()) {
-            payloadMaxInput.setError("Maximum is required");
-            return;
-        }
+    private void setRandomPayloadMode(boolean enabled) {
+        capabilitySettings.setFreezePayloadRandomEnabled(enabled);
+        FreezeCore core = GreatEngine.instance().freezeCore();
+        core.setPayloadRange(capabilitySettings.freezePayloadMin(), capabilitySettings.freezePayloadMax());
+        core.setRandomPayloadRange(
+                capabilitySettings.freezePayloadMinFrom(), capabilitySettings.freezePayloadMinTo(),
+                capabilitySettings.freezePayloadMaxFrom(), capabilitySettings.freezePayloadMaxTo());
+        core.setRandomPayloadRangeEnabled(enabled);
+        updatePayloadRangeModeVisibility(enabled);
+        toast(enabled ? "Random packet range enabled" : "Fixed packet range enabled");
+    }
 
-        final int min;
-        final int max;
-        try {
-            min = Integer.parseInt(minText);
-            max = Integer.parseInt(maxText);
-        } catch (NumberFormatException e) {
-            toast("Enter valid numeric payload thresholds");
-            return;
+    private void updatePayloadRangeModeVisibility(boolean randomEnabled) {
+        if (payloadFixedInputs != null) payloadFixedInputs.setVisibility(randomEnabled ? View.GONE : View.VISIBLE);
+        if (payloadRandomInputs != null) payloadRandomInputs.setVisibility(randomEnabled ? View.VISIBLE : View.GONE);
+    }
+
+    private void savePayloadRange() {
+        boolean randomEnabled = payloadRandomSwitch != null && payloadRandomSwitch.isChecked();
+        if (randomEnabled) {
+            saveRandomPayloadRange();
+        } else {
+            saveFixedPayloadRange();
         }
+    }
+
+    private void saveFixedPayloadRange() {
+        if (payloadMinInput == null || payloadMaxInput == null) return;
+        Integer min = parseRequired(payloadMinInput, "Minimum is required");
+        Integer max = parseRequired(payloadMaxInput, "Maximum is required");
+        if (min == null || max == null) return;
 
         if (min < FreezeCore.MIN_PAYLOAD_LIMIT) {
             payloadMinInput.setError("Minimum must be at least 20 bytes");
@@ -234,8 +299,64 @@ public final class GreatMainActivity extends Activity {
         }
 
         capabilitySettings.setFreezePayloadRange(min, max);
-        GreatEngine.instance().freezeCore().setPayloadRange(min, max);
+        capabilitySettings.setFreezePayloadRandomEnabled(false);
+        FreezeCore core = GreatEngine.instance().freezeCore();
+        core.setPayloadRange(min, max);
+        core.setRandomPayloadRangeEnabled(false);
         toast("Packet range saved: " + min + "–" + max + " bytes");
+    }
+
+    private void saveRandomPayloadRange() {
+        if (payloadMinFromInput == null || payloadMinToInput == null
+                || payloadMaxFromInput == null || payloadMaxToInput == null) return;
+
+        Integer minFrom = parseRequired(payloadMinFromInput, "Min From is required");
+        Integer minTo = parseRequired(payloadMinToInput, "Min To is required");
+        Integer maxFrom = parseRequired(payloadMaxFromInput, "Max From is required");
+        Integer maxTo = parseRequired(payloadMaxToInput, "Max To is required");
+        if (minFrom == null || minTo == null || maxFrom == null || maxTo == null) return;
+
+        if (minFrom < FreezeCore.MIN_PAYLOAD_LIMIT) {
+            payloadMinFromInput.setError("Min From must be at least 20 bytes");
+            return;
+        }
+        if (maxTo > FreezeCore.MAX_PAYLOAD_LIMIT) {
+            payloadMaxToInput.setError("Max To must not exceed 500 bytes");
+            return;
+        }
+        if (minFrom > minTo) {
+            payloadMinFromInput.setError("Min From must be ≤ Min To");
+            return;
+        }
+        if (maxFrom > maxTo) {
+            payloadMaxFromInput.setError("Max From must be ≤ Max To");
+            return;
+        }
+        if (minTo >= maxFrom) {
+            payloadMinToInput.setError("Min To must be less than Max From");
+            return;
+        }
+
+        capabilitySettings.setFreezePayloadRandomRange(minFrom, minTo, maxFrom, maxTo);
+        capabilitySettings.setFreezePayloadRandomEnabled(true);
+        FreezeCore core = GreatEngine.instance().freezeCore();
+        core.setRandomPayloadRange(minFrom, minTo, maxFrom, maxTo);
+        core.setRandomPayloadRangeEnabled(true);
+        toast("Random packet range saved");
+    }
+
+    private Integer parseRequired(EditText input, String emptyMessage) {
+        String value = input.getText().toString().trim();
+        if (value.isEmpty()) {
+            input.setError(emptyMessage);
+            return null;
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException e) {
+            input.setError("Enter a valid number");
+            return null;
+        }
     }
 
     private View robotTimeoutCard() {
