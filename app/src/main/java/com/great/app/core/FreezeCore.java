@@ -17,6 +17,10 @@ public final class FreezeCore implements AutoCloseable {
     public static final int DEFAULT_DURATION_SECONDS = 5;
     public static final int MIN_DURATION_SECONDS = 1;
     public static final int MAX_DURATION_SECONDS = 10;
+    private static final int MIN_RELEASE_BURST = 1;
+    private static final int MAX_RELEASE_BURST = 4;
+    private static final int MIN_RELEASE_DELAY_MS = 5;
+    private static final int MAX_RELEASE_DELAY_MS = 45;
 
     private final CapabilityController controller;
     private final EngineDiagnostics diagnostics;
@@ -142,17 +146,35 @@ public final class FreezeCore implements AutoCloseable {
     }
 
     private void release(ArrayList<PacketEnvelope> all, long session) {
-        for (int i = 0; i < all.size(); i++) {
-            OutputSink output;
-            synchronized (lock) {
-                if (closed || session != generation || sink == null) return;
-                output = sink;
+        int index = 0;
+        while (index < all.size()) {
+            int burstSize = MIN_RELEASE_BURST + rng.nextInt(MAX_RELEASE_BURST - MIN_RELEASE_BURST + 1);
+            int burstEnd = Math.min(all.size(), index + burstSize);
+
+            while (index < burstEnd) {
+                OutputSink output;
+                synchronized (lock) {
+                    if (closed || session != generation || sink == null) return;
+                    output = sink;
+                }
+                try {
+                    output.emit(all.get(index));
+                    diagnostics.released();
+                } catch (Exception e) {
+                    return;
+                }
+                index++;
             }
-            try { output.emit(all.get(i)); diagnostics.released(); }
-            catch (Exception e) { return; }
-            if (i > 0 && (i & 1) == 0) {
-                try { Thread.sleep(1 + rng.nextInt(3)); }
-                catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+
+            if (index < all.size()) {
+                int delayMs = MIN_RELEASE_DELAY_MS
+                        + rng.nextInt(MAX_RELEASE_DELAY_MS - MIN_RELEASE_DELAY_MS + 1);
+                try {
+                    Thread.sleep(delayMs);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
             }
         }
     }
