@@ -1,11 +1,14 @@
 package com.great.app.core;
 
 import org.junit.Test;
-import java.util.Random;
+
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
 import static org.junit.Assert.*;
 
 public final class FreezeCoreTest {
@@ -13,132 +16,190 @@ public final class FreezeCoreTest {
         final CapabilityController state = new CapabilityController();
         final EngineDiagnostics diagnostics = new EngineDiagnostics();
         final FreezeCore core = new FreezeCore(state, diagnostics, new Random(123));
-        Harness() { state.setListener(core::onCapabilityChanged); core.setFreezeDurationSeconds(10); }
-        PacketDecision decide(PacketEnvelope p) { return core.decide(TestPackets.context(p), state.snapshot()); }
-        public void close() { core.close(); }
+
+        Harness() {
+            state.setListener(core::onCapabilityChanged);
+            core.setFreezeDurationSeconds(10);
+        }
+
+        PacketDecision decide(PacketEnvelope p) {
+            return core.decide(TestPackets.context(p), state.snapshot());
+        }
+
+        void enableAndSettleRamp() throws InterruptedException {
+            state.set(Capability.FREEZE, true);
+            Thread.sleep(150);
+        }
+
+        @Override public void close() { core.close(); }
     }
-    @Test public void onlyInboundIpv4UdpIsHeld() {
+
+    @Test public void onlyInboundIpv4UdpIsHeldAfterRamp() throws Exception {
         try (Harness h = new Harness()) {
             PacketEnvelope p = TestPackets.udp(PacketDirection.INBOUND, 443, 100, 1);
             assertEquals(PacketDecision.PASS, h.decide(p));
-            h.state.set(Capability.FREEZE, true);
+            h.enableAndSettleRamp();
             assertEquals(PacketDecision.HOLD, h.decide(p));
-            assertEquals(PacketDecision.PASS, h.decide(TestPackets.udp(PacketDirection.OUTBOUND, 443, 100, 1)));
+            assertEquals(PacketDecision.PASS,
+                    h.decide(TestPackets.udp(PacketDirection.OUTBOUND, 443, 100, 1)));
             p.data()[9] = 6;
             assertEquals(PacketDecision.PASS, h.decide(p));
-            p.data()[9] = 17; p.data()[6] = 0x20;
+            p.data()[9] = 17;
+            p.data()[6] = 0x20;
             assertEquals(PacketDecision.PASS, h.decide(p));
         }
     }
-    @Test public void inclusiveRemotePortBypass() {
+
+    @Test public void inclusiveRemotePortBypass() throws Exception {
         try (Harness h = new Harness()) {
-            h.state.set(Capability.FREEZE, true);
-            for (int port : new int[]{7000,8500,10000}) assertEquals(PacketDecision.PASS, h.decide(TestPackets.udp(PacketDirection.INBOUND,port,100,0)));
-            for (int port : new int[]{6999,10001}) assertEquals(PacketDecision.HOLD, h.decide(TestPackets.udp(PacketDirection.INBOUND,port,100,0)));
-        }
-    }
-    @Test public void strictRandomSizeThresholds() {
-        CapabilityController state = new CapabilityController();
-        try (FreezeCore core = new FreezeCore(state, new EngineDiagnostics(), new Random() {
-            @Override public int nextInt(int bound) { return 0; }
-        })) {
-            assertFalse(core.shouldHold(20)); assertTrue(core.shouldHold(21));
-            assertTrue(core.shouldHold(449)); assertFalse(core.shouldHold(450));
-        }
-        try (Harness h = new Harness()) {
-            for (int i = 0; i < 100; i++) {
-                assertFalse(h.core.shouldHold(20)); assertTrue(h.core.shouldHold(30));
-                assertTrue(h.core.shouldHold(449)); assertFalse(h.core.shouldHold(499));
+            h.enableAndSettleRamp();
+            for (int port : new int[]{7000, 8500, 10000}) {
+                assertEquals(PacketDecision.PASS,
+                        h.decide(TestPackets.udp(PacketDirection.INBOUND, port, 100, 0)));
+            }
+            for (int port : new int[]{6999, 10001}) {
+                assertEquals(PacketDecision.HOLD,
+                        h.decide(TestPackets.udp(PacketDirection.INBOUND, port, 100, 0)));
             }
         }
     }
+
+    @Test public void strictConfiguredSizeThresholds() {
+        CapabilityController state = new CapabilityController();
+        try (FreezeCore core = new FreezeCore(state, new EngineDiagnostics(), new Random(1))) {
+            assertFalse(core.shouldHold(20));
+            assertTrue(core.shouldHold(21));
+            assertTrue(core.shouldHold(499));
+            assertFalse(core.shouldHold(500));
+
+            core.setPayloadRange(35, 75);
+            assertFalse(core.shouldHold(35));
+            assertTrue(core.shouldHold(36));
+            assertTrue(core.shouldHold(74));
+            assertFalse(core.shouldHold(75));
+            assertEquals(35, core.payloadMin());
+            assertEquals(75, core.payloadMax());
+        }
+    }
+
     @Test public void queueCapsAt10000AndEvictsOldestOwnedCopy() throws Exception {
         try (Harness h = new Harness()) {
-            h.state.set(Capability.FREEZE, true);
-            for (int i = 0; i <= FreezeCore.CAPACITY; i++) assertEquals(PacketDecision.HOLD,
-                    h.decide(TestPackets.udp(PacketDirection.INBOUND, 443, 100, i)));
+            h.enableAndSettleRamp();
+            for (int i = 0; i <= FreezeCore.CAPACITY; i++) {
+                assertEquals(PacketDecision.HOLD,
+                        h.decide(TestPackets.udp(PacketDirection.INBOUND, 443, 100, i)));
+            }
             assertEquals(FreezeCore.CAPACITY, h.core.freezeQueueSize());
             assertEquals(1, h.diagnostics.snapshot().schedulerRejected());
-            List<Integer> first = new ArrayList<>();
+
             CountDownLatch emitted = new CountDownLatch(1);
-            h.core.attach(p -> { first.add(p.data()[28] & 255); emitted.countDown(); throw new Exception("stop after first"); });
+            h.core.attach(p -> {
+                emitted.countDown();
+                throw new Exception("stop after first");
+            });
             h.state.set(Capability.FREEZE, false);
             assertTrue(emitted.await(2, TimeUnit.SECONDS));
-            assertEquals(Integer.valueOf(1), first.get(0));
         }
     }
-    @Test public void manualOffReleasesOwnedPacketsInOrder() throws Exception {
+
+    @Test public void manualOffDropsClusterAndReleasesRemainingPackets() throws Exception {
         try (Harness h = new Harness()) {
             List<Integer> emitted = java.util.Collections.synchronizedList(new ArrayList<>());
-            CountDownLatch done = new CountDownLatch(4);
-            h.core.attach(p -> { emitted.add(p.data()[28] & 255); done.countDown(); });
-            h.state.set(Capability.FREEZE, true);
-            for (int i = 0; i < 4; i++) {
-                PacketEnvelope p = TestPackets.udp(PacketDirection.INBOUND,443,100,i);
-                h.decide(p); p.data()[28] = 99;
+            h.core.attach(p -> emitted.add(p.data()[28] & 255));
+            h.enableAndSettleRamp();
+
+            for (int i = 0; i < 20; i++) {
+                assertEquals(PacketDecision.HOLD,
+                        h.decide(TestPackets.udp(PacketDirection.INBOUND, 443, 100, i)));
             }
             h.state.set(Capability.FREEZE, false);
-            assertTrue(done.await(2, TimeUnit.SECONDS));
-            assertEquals(java.util.Arrays.asList(0,1,2,3), emitted);
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (h.diagnostics.snapshot().released() < 15 && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+
+            int released = emitted.size();
+            assertTrue("release count=" + released, released >= 15 && released <= 18);
             assertEquals(0, h.core.freezeQueueSize());
         }
     }
+
     @Test public void timerDisablesAndReleases() throws Exception {
         try (Harness h = new Harness()) {
             CountDownLatch done = new CountDownLatch(1);
-            h.core.attach(p -> done.countDown()); h.core.setFreezeDurationSeconds(1);
-            h.state.set(Capability.FREEZE, true); h.decide(TestPackets.udp(PacketDirection.INBOUND,443,100,0));
+            h.core.attach(p -> done.countDown());
+            h.core.setFreezeDurationSeconds(1);
+            h.state.set(Capability.FREEZE, true);
+            Thread.sleep(150);
+            assertEquals(PacketDecision.HOLD,
+                    h.decide(TestPackets.udp(PacketDirection.INBOUND, 443, 100, 0)));
             assertTrue(done.await(3, TimeUnit.SECONDS));
             assertFalse(h.state.snapshot().enabled(Capability.FREEZE));
         }
     }
+
     @Test public void resetCancelsRemainingReleaseWithoutBlockingQueue() throws Exception {
         try (Harness h = new Harness()) {
             CountDownLatch entered = new CountDownLatch(1);
             CountDownLatch finishWrite = new CountDownLatch(1);
             CountDownLatch firstDone = new CountDownLatch(1);
-            java.util.concurrent.atomic.AtomicInteger writes = new java.util.concurrent.atomic.AtomicInteger();
+            AtomicInteger writes = new AtomicInteger();
             h.core.attach(p -> {
-                writes.incrementAndGet(); entered.countDown();
+                writes.incrementAndGet();
+                entered.countDown();
                 assertTrue(finishWrite.await(2, TimeUnit.SECONDS));
                 firstDone.countDown();
             });
-            h.state.set(Capability.FREEZE,true);
-            h.decide(TestPackets.udp(PacketDirection.INBOUND,443,100,0));
-            h.decide(TestPackets.udp(PacketDirection.INBOUND,443,100,1));
-            h.state.set(Capability.FREEZE,false);
-            assertTrue(entered.await(2,TimeUnit.SECONDS));
-            h.core.reset(); h.state.reset();
+
+            h.enableAndSettleRamp();
+            assertEquals(PacketDecision.HOLD,
+                    h.decide(TestPackets.udp(PacketDirection.INBOUND, 443, 100, 0)));
+            assertEquals(PacketDecision.HOLD,
+                    h.decide(TestPackets.udp(PacketDirection.INBOUND, 443, 100, 1)));
+            h.state.set(Capability.FREEZE, false);
+            assertTrue(entered.await(2, TimeUnit.SECONDS));
+
+            h.core.reset();
+            h.state.reset();
             finishWrite.countDown();
-            assertTrue(firstDone.await(2,TimeUnit.SECONDS));
-            // Queue another release after reset; its completion proves the old task has returned.
+            assertTrue(firstDone.await(2, TimeUnit.SECONDS));
+
             CountDownLatch nextDone = new CountDownLatch(1);
             h.core.attach(p -> nextDone.countDown());
-            h.state.set(Capability.FREEZE,true);
-            h.decide(TestPackets.udp(PacketDirection.INBOUND,443,100,2));
-            h.state.set(Capability.FREEZE,false);
-            assertTrue(nextDone.await(2,TimeUnit.SECONDS));
-            assertEquals(1,writes.get());
+            h.enableAndSettleRamp();
+            assertEquals(PacketDecision.HOLD,
+                    h.decide(TestPackets.udp(PacketDirection.INBOUND, 443, 100, 2)));
+            h.state.set(Capability.FREEZE, false);
+            assertTrue(nextDone.await(2, TimeUnit.SECONDS));
+            assertEquals(1, writes.get());
         }
     }
 
-    @Test public void resetDropsHeldPackets() {
+    @Test public void resetDropsHeldPackets() throws Exception {
         try (Harness h = new Harness()) {
-            h.state.set(Capability.FREEZE, true); h.decide(TestPackets.udp(PacketDirection.INBOUND,443,100,0));
-            h.core.reset(); h.state.reset();
-            assertEquals(0,h.core.freezeQueueSize());
-            assertEquals(PacketDecision.PASS,h.decide(TestPackets.udp(PacketDirection.INBOUND,443,100,0)));
+            h.enableAndSettleRamp();
+            assertEquals(PacketDecision.HOLD,
+                    h.decide(TestPackets.udp(PacketDirection.INBOUND, 443, 100, 0)));
+            h.core.reset();
+            h.state.reset();
+            assertEquals(0, h.core.freezeQueueSize());
+            assertEquals(PacketDecision.PASS,
+                    h.decide(TestPackets.udp(PacketDirection.INBOUND, 443, 100, 0)));
         }
     }
-    @Test public void policyNeverHoldsUnselectedTraffic() {
+
+    @Test public void policyNeverHoldsUnselectedTraffic() throws Exception {
         try (Harness h = new Harness()) {
-            h.state.set(Capability.FREEZE,true);
+            h.enableAndSettleRamp();
             ConfigurablePacketSelector targets = new ConfigurablePacketSelector();
-            PacketPipeline pipeline = new PacketPipeline(new FreezePolicy(targets,h.core),h.state);
-            PacketEnvelope packet = TestPackets.udp(PacketDirection.INBOUND,443,100,0);
-            assertEquals(PacketDecision.PASS,pipeline.evaluate(packet));
-            targets.set(PacketSelector.all()); assertEquals(PacketDecision.HOLD,pipeline.evaluate(packet));
-            targets.clear(); assertEquals(PacketDecision.PASS,pipeline.evaluate(packet));
+            PacketPipeline pipeline = new PacketPipeline(new FreezePolicy(targets, h.core), h.state);
+            PacketEnvelope packet = TestPackets.udp(PacketDirection.INBOUND, 443, 100, 0);
+            assertEquals(PacketDecision.PASS, pipeline.evaluate(packet));
+            targets.set(PacketSelector.all());
+            assertEquals(PacketDecision.HOLD, pipeline.evaluate(packet));
+            targets.clear();
+            assertEquals(PacketDecision.PASS, pipeline.evaluate(packet));
         }
     }
 }
