@@ -85,6 +85,7 @@ public final class GreatVpnService extends VpnService {
 
             CapabilitySettingsStore tuning = new CapabilitySettingsStore(this);
             engine.freezeCore().setFreezeDurationSeconds(tuning.freezeSeconds());
+            engine.freezeCore().setPayloadRange(tuning.freezePayloadMin(), tuning.freezePayloadMax());
 
             refreshTargets();
             raw = new SecureConfigStore(this).load();
