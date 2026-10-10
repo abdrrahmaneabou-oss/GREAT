@@ -18,10 +18,11 @@ import java.util.concurrent.TimeUnit;
  */
 public final class RobotFreezeOrchestrator {
     public static final int FREEZE_SKIP_PERCENT = 25;
-    public static final int MIN_PERIODIC_INTERVAL_SECONDS = 30;
-    public static final int MAX_PERIODIC_INTERVAL_SECONDS = 60;
+    public static final int MIN_PERIODIC_INTERVAL_MS = 30_000;
+    public static final int MAX_PERIODIC_INTERVAL_MS = 60_000;
     public static final int MIN_PERIODIC_FREEZE_MS = 300;
     public static final int MAX_PERIODIC_FREEZE_MS = 800;
+    private static final int MONITOR_POLL_MS = 250;
 
     private static final RobotFreezeOrchestrator INSTANCE =
             new RobotFreezeOrchestrator(new Random());
@@ -37,17 +38,19 @@ public final class RobotFreezeOrchestrator {
     private boolean started;
     private boolean visualCycleBusy;
     private boolean periodicFreezeActive;
-    private ScheduledFuture<?> nextPeriodic;
+    private long nextPeriodicAtNanos;
     private ScheduledFuture<?> periodicEnd;
 
     private RobotFreezeOrchestrator(Random rng) { this.rng = rng; }
     public static RobotFreezeOrchestrator instance() { return INSTANCE; }
 
+    /** Polling only tracks Robot ON/OFF; actual Freeze deadlines are random to the millisecond. */
     public void ensureStarted() {
         synchronized (lock) {
             if (started) return;
             started = true;
-            scheduleNextLocked();
+            scheduler.scheduleWithFixedDelay(this::periodicTick,
+                    0L, MONITOR_POLL_MS, TimeUnit.MILLISECONDS);
         }
     }
 
@@ -63,8 +66,6 @@ public final class RobotFreezeOrchestrator {
     public void finishVisualCycle(boolean freezeActuallyRan) {
         synchronized (lock) { visualCycleBusy = false; }
         GlobalRobotOutboundThrottle throttle = GlobalRobotOutboundThrottle.instance();
-        // If the existing monitor safety timeout already ended the hold, the throttle hot path
-        // has already converted LIGHT into POST_FREEZE. Do not restart that post phase on white return.
         if (freezeActuallyRan && throttle.lightActive()) {
             throttle.finishFreezeAndStartPostThrottle();
         }
@@ -79,7 +80,6 @@ public final class RobotFreezeOrchestrator {
         if (!periodic) GlobalRobotOutboundThrottle.instance().cancelActiveCycle();
     }
 
-    /** Start light throttling only after FreezeCore has actually entered Robot hold. */
     public void visualFreezeStarted() {
         GlobalRobotOutboundThrottle.instance().startLightForFreeze();
     }
@@ -88,44 +88,49 @@ public final class RobotFreezeOrchestrator {
         synchronized (lock) { return periodicFreezeActive; }
     }
 
-    private void scheduleNextLocked() {
-        if (!started) return;
-        int seconds = randomInclusiveLocked(MIN_PERIODIC_INTERVAL_SECONDS, MAX_PERIODIC_INTERVAL_SECONDS);
-        nextPeriodic = scheduler.schedule(this::periodicTick, seconds, TimeUnit.SECONDS);
-    }
-
     private void periodicTick() {
-        try {
-            boolean run = false;
-            int durationMs = 0;
-            synchronized (lock) {
-                nextPeriodic = null;
-                GreatEngine engine = GreatEngine.instance();
-                boolean manualFreeze = engine.capabilities().snapshot().enabled(Capability.FREEZE);
-                boolean eligible = FreezeMonitorService.isMonitoringActive()
-                        && !visualCycleBusy
-                        && !periodicFreezeActive
-                        && !manualFreeze
-                        && !engine.freezeCore().holdTriggerActive();
-                // 25% of periodic Robot attempts are ignored too.
-                if (eligible && rng.nextInt(100) >= FREEZE_SKIP_PERCENT) {
-                    periodicFreezeActive = true;
-                    durationMs = randomInclusiveLocked(MIN_PERIODIC_FREEZE_MS, MAX_PERIODIC_FREEZE_MS);
-                    run = true;
-                }
+        boolean run = false;
+        int durationMs = 0;
+        synchronized (lock) {
+            long now = System.nanoTime();
+            if (!FreezeMonitorService.isMonitoringActive()) {
+                // When Robot is re-enabled, it always gets a fresh full 30..60 second interval.
+                nextPeriodicAtNanos = 0L;
+                return;
             }
 
-            if (run) {
-                GreatEngine.instance().freezeCore().setHoldTrigger(true);
-                GlobalRobotOutboundThrottle.instance().startLightForFreeze();
-                final int chosenDuration = durationMs;
-                synchronized (lock) {
-                    periodicEnd = scheduler.schedule(this::finishPeriodicFreeze,
-                            chosenDuration, TimeUnit.MILLISECONDS);
-                }
+            if (nextPeriodicAtNanos == 0L) {
+                nextPeriodicAtNanos = now + TimeUnit.MILLISECONDS.toNanos(
+                        randomInclusiveLocked(MIN_PERIODIC_INTERVAL_MS, MAX_PERIODIC_INTERVAL_MS));
+                return;
             }
-        } finally {
-            synchronized (lock) { scheduleNextLocked(); }
+            if (now < nextPeriodicAtNanos) return;
+
+            // Every deadline immediately receives a new independent 30..60 s deadline, whether
+            // this particular cycle runs or is skipped by the 25% rule / another active Freeze.
+            nextPeriodicAtNanos = now + TimeUnit.MILLISECONDS.toNanos(
+                    randomInclusiveLocked(MIN_PERIODIC_INTERVAL_MS, MAX_PERIODIC_INTERVAL_MS));
+
+            GreatEngine engine = GreatEngine.instance();
+            boolean manualFreeze = engine.capabilities().snapshot().enabled(Capability.FREEZE);
+            boolean eligible = !visualCycleBusy
+                    && !periodicFreezeActive
+                    && !manualFreeze
+                    && !engine.freezeCore().holdTriggerActive();
+            if (eligible && rng.nextInt(100) >= FREEZE_SKIP_PERCENT) {
+                periodicFreezeActive = true;
+                durationMs = randomInclusiveLocked(MIN_PERIODIC_FREEZE_MS, MAX_PERIODIC_FREEZE_MS);
+                run = true;
+            }
+        }
+
+        if (!run) return;
+        GreatEngine.instance().freezeCore().setHoldTrigger(true);
+        GlobalRobotOutboundThrottle.instance().startLightForFreeze();
+        final int chosenDuration = durationMs;
+        synchronized (lock) {
+            periodicEnd = scheduler.schedule(this::finishPeriodicFreeze,
+                    chosenDuration, TimeUnit.MILLISECONDS);
         }
     }
 
