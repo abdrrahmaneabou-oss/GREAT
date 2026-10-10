@@ -12,21 +12,29 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * Global OUTBOUND IPv4/UDP throttle driven by Robot white-return cycles.
+ * Global OUTBOUND IPv4/UDP throttle driven by Robot Freeze cycles.
  *
  * This path deliberately runs before target-app ownership and Freeze filtering. It therefore
  * applies to every OUTBOUND IPv4 packet whose IP protocol byte is UDP, including fragmented
- * datagrams. It never drops packets; matching packets are held and re-emitted after the current
- * per-cycle delay.
+ * datagrams. It never drops packets.
+ *
+ * Robot uses two phases:
+ *  - LIGHT while Robot Freeze is actually active: one random fixed 30..60 ms delay per cycle.
+ *  - POST_FREEZE after Robot Freeze ends: 30% skipped; otherwise a random 75..175 ms starting
+ *    delay decays irregularly to zero across a random 200..350 ms window.
  */
 public final class GlobalRobotOutboundThrottle {
     public interface OutputSink { void emit(PacketEnvelope packet) throws Exception; }
 
+    public static final int MIN_LIGHT_DELAY_MS = 30;
+    public static final int MAX_LIGHT_DELAY_MS = 60;
     public static final int MIN_START_DELAY_MS = 75;
     public static final int MAX_START_DELAY_MS = 175;
     public static final int MIN_DURATION_MS = 200;
     public static final int MAX_DURATION_MS = 350;
-    public static final int SKIP_PERCENT = 30;
+    public static final int POST_FREEZE_SKIP_PERCENT = 30;
+
+    private enum Phase { NONE, LIGHT, POST_FREEZE }
 
     private static final GlobalRobotOutboundThrottle INSTANCE =
             new GlobalRobotOutboundThrottle(new Random());
@@ -45,6 +53,8 @@ public final class GlobalRobotOutboundThrottle {
     private OutputSink sink;
     private long transportGeneration;
 
+    private Phase phase = Phase.NONE;
+    private long lightDelayNanos;
     private long cycleStartedNanos;
     private long cycleEndsNanos;
     private long cycleDurationNanos;
@@ -70,13 +80,17 @@ public final class GlobalRobotOutboundThrottle {
 
     public boolean active() {
         synchronized (lock) {
-            if (!featureEnabled || cycleEndsNanos <= 0L) return false;
-            if (System.nanoTime() >= cycleEndsNanos) {
+            if (!featureEnabled || phase == Phase.NONE) return false;
+            if (phase == Phase.POST_FREEZE && System.nanoTime() >= cycleEndsNanos) {
                 clearCycleLocked();
                 return false;
             }
             return true;
         }
+    }
+
+    public boolean lightActive() {
+        synchronized (lock) { return featureEnabled && phase == Phase.LIGHT; }
     }
 
     public long seen() { return seen.get(); }
@@ -99,17 +113,33 @@ public final class GlobalRobotOutboundThrottle {
         }
     }
 
-    /**
-     * Called exactly when Robot confirms FIRED -> ARMED (white returned).
-     * 30% of otherwise eligible cycles are intentionally skipped.
-     */
-    public boolean startFromRobotWhiteReturn() {
+    /** Starts the light global throttle for an actual Robot Freeze cycle. */
+    public boolean startLightForFreeze() {
         synchronized (lock) {
             if (!featureEnabled || sink == null) {
                 clearCycleLocked();
                 return false;
             }
-            if (rng.nextInt(100) < SKIP_PERCENT) {
+            phase = Phase.LIGHT;
+            lightDelayNanos = TimeUnit.MILLISECONDS.toNanos(
+                    randomInclusiveLocked(MIN_LIGHT_DELAY_MS, MAX_LIGHT_DELAY_MS));
+            clearPostFreezeFieldsLocked();
+            return true;
+        }
+    }
+
+    /**
+     * Ends the light phase and starts the normal post-Freeze decay. 30% of these post-Freeze
+     * throttle cycles are intentionally skipped.
+     */
+    public boolean finishFreezeAndStartPostThrottle() {
+        synchronized (lock) {
+            if (!featureEnabled || sink == null) {
+                clearCycleLocked();
+                return false;
+            }
+            lightDelayNanos = 0L;
+            if (rng.nextInt(100) < POST_FREEZE_SKIP_PERCENT) {
                 clearCycleLocked();
                 return false;
             }
@@ -117,6 +147,7 @@ public final class GlobalRobotOutboundThrottle {
             int startDelayMs = randomInclusiveLocked(MIN_START_DELAY_MS, MAX_START_DELAY_MS);
             int durationMs = randomInclusiveLocked(MIN_DURATION_MS, MAX_DURATION_MS);
             long now = System.nanoTime();
+            phase = Phase.POST_FREEZE;
             cycleStartedNanos = now;
             cycleDurationNanos = TimeUnit.MILLISECONDS.toNanos(durationMs);
             cycleEndsNanos = now + cycleDurationNanos;
@@ -124,6 +155,11 @@ public final class GlobalRobotOutboundThrottle {
             previousDelayNanos = startDelayNanos + 1L;
             return true;
         }
+    }
+
+    /** Cancels Robot throttle state without changing the user's feature setting. */
+    public void cancelActiveCycle() {
+        synchronized (lock) { clearCycleLocked(); }
     }
 
     /** Called before GREAT's target-app Freeze policy. */
@@ -137,13 +173,19 @@ public final class GlobalRobotOutboundThrottle {
         final long generation;
         final long delayNanos;
         synchronized (lock) {
-            if (!featureEnabled || sink == null || cycleEndsNanos <= 0L) return PacketDecision.PASS;
-            long now = System.nanoTime();
-            if (now >= cycleEndsNanos) {
-                clearCycleLocked();
-                return PacketDecision.PASS;
+            if (!featureEnabled || sink == null || phase == Phase.NONE) return PacketDecision.PASS;
+
+            if (phase == Phase.LIGHT) {
+                delayNanos = lightDelayNanos;
+            } else {
+                long now = System.nanoTime();
+                if (now >= cycleEndsNanos) {
+                    clearCycleLocked();
+                    return PacketDecision.PASS;
+                }
+                delayNanos = nextPostFreezeDelayLocked(now);
             }
-            delayNanos = nextDelayLocked(now);
+
             if (delayNanos <= 0L) return PacketDecision.PASS;
             output = sink;
             generation = transportGeneration;
@@ -159,19 +201,17 @@ public final class GlobalRobotOutboundThrottle {
         return PacketDecision.HOLD;
     }
 
-    private long nextDelayLocked(long now) {
+    private long nextPostFreezeDelayLocked(long now) {
         long remaining = cycleEndsNanos - now;
         if (remaining <= 0L || cycleDurationNanos <= 0L || startDelayNanos <= 0L) {
             clearCycleLocked();
             return 0L;
         }
 
-        // Linear time ceiling ensures zero at this cycle's random 200..350 ms endpoint.
         long ceiling = Math.max(1L, (startDelayNanos * remaining) / cycleDurationNanos);
         long maxAllowed = Math.min(ceiling, previousDelayNanos - 1L);
         if (maxAllowed <= 0L) return 0L;
 
-        // Keep the sequence strictly decreasing, but make each step irregular rather than fixed.
         long floor = Math.max(1L, maxAllowed - TimeUnit.MILLISECONDS.toNanos(12));
         long span = maxAllowed - floor;
         long chosen = span <= 0L ? maxAllowed : floor + nextLongBoundedLocked(span + 1L);
@@ -187,6 +227,12 @@ public final class GlobalRobotOutboundThrottle {
     }
 
     private void clearCycleLocked() {
+        phase = Phase.NONE;
+        lightDelayNanos = 0L;
+        clearPostFreezeFieldsLocked();
+    }
+
+    private void clearPostFreezeFieldsLocked() {
         cycleStartedNanos = 0L;
         cycleEndsNanos = 0L;
         cycleDurationNanos = 0L;
