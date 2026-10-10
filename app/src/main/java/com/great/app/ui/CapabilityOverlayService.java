@@ -23,9 +23,8 @@ import android.widget.Toast;
 import com.great.app.config.MonitorSettingsStore;
 import com.great.app.core.Capability;
 import com.great.app.core.GreatEngine;
-import com.great.app.transport.GlobalUdpThrottleTest;
 
-/** Three independent floating controls: robot, manual Freeze, and a global UDP throttle test. */
+/** Two independent floating controls: robot for visual monitoring, snowflake for manual Freeze. */
 public final class CapabilityOverlayService extends Service {
     public static final String ACTION_SHOW = "com.great.app.action.SHOW_CAPABILITIES";
     public static final String ACTION_HIDE = "com.great.app.action.HIDE_CAPABILITIES";
@@ -35,24 +34,17 @@ public final class CapabilityOverlayService extends Service {
     private static final String KEY_ROBOT_Y = "robot_y";
     private static final String KEY_FREEZE_X = "freeze_x";
     private static final String KEY_FREEZE_Y = "freeze_y";
-    private static final String KEY_THROTTLE_X = "throttle_x";
-    private static final String KEY_THROTTLE_Y = "throttle_y";
     private static final int ACTIVE = 0xffef5350;
     private static final int INACTIVE = 0xff7b808c;
     private static final int EDITING = 0xffffc107;
     private static final int SIZE_DP = 58;
     private static final long LONG_PRESS_MS = 300L;
-    private static final int CONTROL_ROBOT = 0;
-    private static final int CONTROL_FREEZE = 1;
-    private static final int CONTROL_THROTTLE = 2;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable renderTick = new Runnable() {
         @Override public void run() {
             renderStates();
-            if (robotView != null || freezeView != null || throttleView != null) {
-                handler.postDelayed(this, 150);
-            }
+            if (robotView != null || freezeView != null) handler.postDelayed(this, 150);
         }
     };
 
@@ -61,10 +53,8 @@ public final class CapabilityOverlayService extends Service {
     private MonitorSettingsStore monitorSettings;
     private TextView robotView;
     private TextView freezeView;
-    private TextView throttleView;
     private WindowManager.LayoutParams robotParams;
     private WindowManager.LayoutParams freezeParams;
-    private WindowManager.LayoutParams throttleParams;
 
     @Override public void onCreate() {
         super.onCreate();
@@ -85,35 +75,27 @@ public final class CapabilityOverlayService extends Service {
     }
 
     private void showOverlay() {
-        if (robotView != null || freezeView != null || throttleView != null) return;
+        if (robotView != null || freezeView != null) return;
         Point screen = screenSize();
         int size = dp(SIZE_DP);
         int x = Math.max(0, screen.x - size - dp(18));
-
-        throttleView = circle("🛜");
-        throttleParams = params(
-                prefs.getInt(KEY_THROTTLE_X, x),
-                prefs.getInt(KEY_THROTTLE_Y, dp(300)), size);
-        throttleView.setOnTouchListener(new CircleTouch(CONTROL_THROTTLE));
-        windowManager.addView(throttleView, throttleParams);
 
         freezeView = circle("❄️");
         freezeParams = params(
                 prefs.getInt(KEY_FREEZE_X, x),
                 prefs.getInt(KEY_FREEZE_Y, dp(230)), size);
-        freezeView.setOnTouchListener(new CircleTouch(CONTROL_FREEZE));
+        freezeView.setOnTouchListener(new CircleTouch(false));
         windowManager.addView(freezeView, freezeParams);
 
         robotView = circle("🤖");
         robotParams = params(
                 prefs.getInt(KEY_ROBOT_X, x),
                 prefs.getInt(KEY_ROBOT_Y, dp(160)), size);
-        robotView.setOnTouchListener(new CircleTouch(CONTROL_ROBOT));
+        robotView.setOnTouchListener(new CircleTouch(true));
         windowManager.addView(robotView, robotParams);
 
         clampAndUpdate(robotView, robotParams, KEY_ROBOT_X, KEY_ROBOT_Y, false);
         clampAndUpdate(freezeView, freezeParams, KEY_FREEZE_X, KEY_FREEZE_Y, false);
-        clampAndUpdate(throttleView, throttleParams, KEY_THROTTLE_X, KEY_THROTTLE_Y, false);
         renderStates();
         handler.post(renderTick);
     }
@@ -154,10 +136,6 @@ public final class CapabilityOverlayService extends Service {
         if (freezeView != null) {
             boolean active = GreatEngine.instance().capabilities().snapshot().enabled(Capability.FREEZE);
             freezeView.setBackground(circleBg(active ? ACTIVE : INACTIVE));
-        }
-        if (throttleView != null) {
-            throttleView.setBackground(circleBg(
-                    GlobalUdpThrottleTest.instance().enabled() ? ACTIVE : INACTIVE));
         }
     }
 
@@ -208,16 +186,6 @@ public final class CapabilityOverlayService extends Service {
         renderStates();
     }
 
-    private void onThrottleClick() {
-        GlobalUdpThrottleTest throttle = GlobalUdpThrottleTest.instance();
-        boolean next = !throttle.enabled();
-        throttle.setEnabled(next);
-        Toast.makeText(this,
-                next ? "Global IPv4 UDP throttle: 100 ms ON" : "Global IPv4 UDP throttle OFF",
-                Toast.LENGTH_SHORT).show();
-        renderStates();
-    }
-
     private GradientDrawable circleBg(int color) {
         GradientDrawable d = new GradientDrawable();
         d.setShape(GradientDrawable.OVAL);
@@ -227,17 +195,17 @@ public final class CapabilityOverlayService extends Service {
     }
 
     private final class CircleTouch implements View.OnTouchListener {
-        private final int control;
+        private final boolean robot;
         private float downRawX, downRawY;
         private int startX, startY;
         private boolean dragging;
         private boolean longPressed;
         private Runnable longPress;
 
-        CircleTouch(int control) { this.control = control; }
+        CircleTouch(boolean robot) { this.robot = robot; }
 
         @Override public boolean onTouch(View view, MotionEvent event) {
-            WindowManager.LayoutParams p = paramsFor(control);
+            WindowManager.LayoutParams p = robot ? robotParams : freezeParams;
             if (p == null) return false;
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN -> {
@@ -247,7 +215,7 @@ public final class CapabilityOverlayService extends Service {
                     startY = p.y;
                     dragging = false;
                     longPressed = false;
-                    if (control == CONTROL_ROBOT) {
+                    if (robot) {
                         longPress = () -> {
                             if (!dragging) {
                                 longPressed = true;
@@ -271,11 +239,10 @@ public final class CapabilityOverlayService extends Service {
                 case MotionEvent.ACTION_UP -> {
                     cancelLongPress();
                     if (dragging) {
-                        saveControlPosition(control, p);
+                        if (robot) savePosition(p, KEY_ROBOT_X, KEY_ROBOT_Y);
+                        else savePosition(p, KEY_FREEZE_X, KEY_FREEZE_Y);
                     } else if (!longPressed) {
-                        if (control == CONTROL_ROBOT) onRobotClick();
-                        else if (control == CONTROL_FREEZE) onFreezeClick();
-                        else onThrottleClick();
+                        if (robot) onRobotClick(); else onFreezeClick();
                     }
                     return true;
                 }
@@ -291,18 +258,6 @@ public final class CapabilityOverlayService extends Service {
             if (longPress != null) handler.removeCallbacks(longPress);
             longPress = null;
         }
-    }
-
-    private WindowManager.LayoutParams paramsFor(int control) {
-        if (control == CONTROL_ROBOT) return robotParams;
-        if (control == CONTROL_FREEZE) return freezeParams;
-        return throttleParams;
-    }
-
-    private void saveControlPosition(int control, WindowManager.LayoutParams p) {
-        if (control == CONTROL_ROBOT) savePosition(p, KEY_ROBOT_X, KEY_ROBOT_Y);
-        else if (control == CONTROL_FREEZE) savePosition(p, KEY_FREEZE_X, KEY_FREEZE_Y);
-        else savePosition(p, KEY_THROTTLE_X, KEY_THROTTLE_Y);
     }
 
     private void move(View view, WindowManager.LayoutParams p, int x, int y) {
@@ -340,13 +295,10 @@ public final class CapabilityOverlayService extends Service {
         handler.removeCallbacks(renderTick);
         if (robotView != null) try { windowManager.removeView(robotView); } catch (Throwable ignored) { }
         if (freezeView != null) try { windowManager.removeView(freezeView); } catch (Throwable ignored) { }
-        if (throttleView != null) try { windowManager.removeView(throttleView); } catch (Throwable ignored) { }
         robotView = null;
         freezeView = null;
-        throttleView = null;
         robotParams = null;
         freezeParams = null;
-        throttleParams = null;
     }
 
     @Override public void onDestroy() { removeOverlay(); super.onDestroy(); }
