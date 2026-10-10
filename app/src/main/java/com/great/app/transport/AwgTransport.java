@@ -40,7 +40,9 @@ public final class AwgTransport implements TunnelTransport {
 
     private final PacketPipeline pipeline;
     private final FreezeCore capabilities;
+    private final GlobalUdpThrottleTest globalUdpThrottle = GlobalUdpThrottleTest.instance();
     private final FreezeCore.OutputSink capabilitySink = this::emitCapabilityPacket;
+    private final GlobalUdpThrottleTest.OutputSink globalThrottleSink = this::emitCapabilityPacket;
     private final Object bridgeWriteLock = new Object();
     private final Object tunWriteLock = new Object();
     private final AtomicLong outboundPackets = new AtomicLong();
@@ -115,11 +117,13 @@ public final class AwgTransport implements TunnelTransport {
             handle = startedHandle;
             running = true;
             capabilities.attach(capabilitySink);
+            globalUdpThrottle.attach(globalThrottleSink);
             state = TransportState.CONNECTED;
             startPumps();
         } catch (Throwable failure) {
             running = false;
             capabilities.detach(capabilitySink);
+            globalUdpThrottle.detach(globalThrottleSink);
             if (startedHandle >= 0) {
                 try { GreatAwgBridge.turnOff(startedHandle); } catch (Throwable ignored) { }
             }
@@ -175,8 +179,15 @@ public final class AwgTransport implements TunnelTransport {
 
     private void applyDecision(byte[] packet, int length, PacketDirection direction,
                                FileDescriptor destination) throws Exception {
-        PacketDecision decision = pipeline.evaluate(
-                new PacketEnvelope(packet, length, direction, System.nanoTime()));
+        PacketEnvelope envelope = new PacketEnvelope(packet, length, direction, System.nanoTime());
+
+        // Independent diagnostic path: this runs before target package ownership and Freeze rules.
+        if (direction == PacketDirection.OUTBOUND
+                && globalUdpThrottle.decide(envelope) == PacketDecision.HOLD) {
+            return;
+        }
+
+        PacketDecision decision = pipeline.evaluate(envelope);
         switch (decision) {
             case PASS -> writeDirected(direction, destination, packet, length);
             case DROP -> droppedPackets.incrementAndGet();
@@ -212,6 +223,7 @@ public final class AwgTransport implements TunnelTransport {
         if (!running) return;
         running = false;
         capabilities.detach(capabilitySink);
+        globalUdpThrottle.detach(globalThrottleSink);
         state = TransportState.FAILED;
         int current = handle;
         handle = -1;
@@ -240,6 +252,7 @@ public final class AwgTransport implements TunnelTransport {
         synchronized (this) {
             running = false;
             capabilities.detach(capabilitySink);
+            globalUdpThrottle.detach(globalThrottleSink);
             int current = handle;
             handle = -1;
             if (current >= 0) {
