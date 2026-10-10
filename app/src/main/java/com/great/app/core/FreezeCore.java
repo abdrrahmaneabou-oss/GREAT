@@ -29,10 +29,10 @@ public final class FreezeCore implements AutoCloseable {
 
     private static final int MIN_RELEASE_BURST = 1;
     private static final int MAX_RELEASE_BURST = 4;
-    private static final int MIN_RELEASE_DELAY_MS = 5;
-    private static final int MAX_RELEASE_DELAY_MS = 45;
-    private static final int MIN_RELEASE_DROP_PERCENT = 12;
-    private static final int MAX_RELEASE_DROP_PERCENT = 23;
+    private static final int MIN_RELEASE_DELAY_MS = 30;
+    private static final int MAX_RELEASE_DELAY_MS = 100;
+    private static final int MIN_RELEASE_DROP_PERCENT = 15;
+    private static final int MAX_RELEASE_DROP_PERCENT = 33;
 
     private static final int MIN_RAMP_DURATION_MS = 70;
     private static final int MAX_RAMP_DURATION_MS = 130;
