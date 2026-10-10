@@ -1,6 +1,6 @@
 package com.great.app.monitor;
 
-import com.great.app.core.GreatEngine;
+import com.great.app.transport.GlobalRobotOutboundThrottle;
 
 import java.util.ArrayDeque;
 
@@ -123,7 +123,7 @@ public final class PixelTriggerMonitorEngine {
         State previous = state;
         state = next;
         if (previous == State.FIRED && next == State.ARMED) {
-            GreatEngine.instance().freezeCore().startOutboundThrottleFromRobotWhiteReturn();
+            GlobalRobotOutboundThrottle.instance().startFromRobotWhiteReturn();
         }
         if (listener != null) listener.onStateChanged(next);
     }
