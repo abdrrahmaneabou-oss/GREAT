@@ -78,6 +78,10 @@ public final class GreatMainActivity extends Activity {
     private EditText payloadMinToInput;
     private EditText payloadMaxFromInput;
     private EditText payloadMaxToInput;
+    private EditText lightThrottleStartMinInput;
+    private EditText lightThrottleStartMaxInput;
+    private EditText lightThrottleDurationMinInput;
+    private EditText lightThrottleDurationMaxInput;
     private EditText postThrottleStartMinInput;
     private EditText postThrottleStartMaxInput;
     private EditText postThrottleDurationMinInput;
@@ -101,6 +105,7 @@ public final class GreatMainActivity extends Activity {
         applySavedPayloadSettings();
         GreatEngine.instance().freezeCore().setFreezeDurationSeconds(capabilitySettings.freezeSeconds());
         GreatEngine.instance().freezeCore().setOutboundThrottleEnabled(false);
+        applySavedLightThrottleSettings();
         applySavedVisualPostThrottleSettings();
         setContentView(buildContent());
         refreshConfig();
@@ -114,6 +119,15 @@ public final class GreatMainActivity extends Activity {
                 capabilitySettings.freezePayloadMinFrom(), capabilitySettings.freezePayloadMinTo(),
                 capabilitySettings.freezePayloadMaxFrom(), capabilitySettings.freezePayloadMaxTo());
         core.setRandomPayloadRangeEnabled(capabilitySettings.freezePayloadRandomEnabled());
+    }
+
+    private void applySavedLightThrottleSettings() {
+        GlobalRobotOutboundThrottle throttle = GlobalRobotOutboundThrottle.instance();
+        throttle.setLightEnabled(capabilitySettings.robotLightThrottleEnabled());
+        throttle.setLightStopOnWhiteReturn(capabilitySettings.robotLightStopOnWhiteReturn());
+        throttle.setLightRange(
+                capabilitySettings.robotLightStartMinMs(), capabilitySettings.robotLightStartMaxMs(),
+                capabilitySettings.robotLightDurationMinMs(), capabilitySettings.robotLightDurationMaxMs());
     }
 
     private void applySavedVisualPostThrottleSettings() {
@@ -167,6 +181,7 @@ public final class GreatMainActivity extends Activity {
         add(root, vpnCard(), 14);
         add(root, targetCard(), 14);
         add(root, packetRangeCard(), 14);
+        add(root, lightThrottleCard(), 14);
         add(root, outboundThrottleCard(), 14);
         add(root, freezeHistoryCard(), 14);
         add(root, detailedFreezeHistoryCard(), 14);
@@ -255,11 +270,94 @@ public final class GreatMainActivity extends Activity {
         return card;
     }
 
+    private View lightThrottleCard() {
+        LinearLayout card = card();
+        add(card, text("ROBOT LIGHT OUTBOUND THROTTLE", 11, ACCENT, true), 0);
+        add(card, text(
+                "Parallel Global OUTBOUND IPv4/UDP throttle for Robot Freeze. Each cycle picks one starting delay and one duration, then delay decays by random 15–30% steps under a time ceiling until zero.",
+                12, MUTED, false), 8);
+
+        LinearLayout enableRow = new LinearLayout(this);
+        enableRow.setOrientation(LinearLayout.HORIZONTAL);
+        enableRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView enableLabel = text("ENABLE LIGHT THROTTLE", 13, TEXT, true);
+        enableRow.addView(enableLabel, new LinearLayout.LayoutParams(0, -2, 1f));
+        Switch enable = new Switch(this);
+        enable.setChecked(capabilitySettings.robotLightThrottleEnabled());
+        enable.setOnCheckedChangeListener((buttonView, enabled) -> {
+            capabilitySettings.setRobotLightThrottleEnabled(enabled);
+            GlobalRobotOutboundThrottle.instance().setLightEnabled(enabled);
+            toast(enabled ? "Robot light throttle enabled" : "Robot light throttle disabled");
+        });
+        enableRow.addView(enable, new LinearLayout.LayoutParams(-2, -2));
+        add(card, enableRow, 14);
+
+        LinearLayout whiteRow = new LinearLayout(this);
+        whiteRow.setOrientation(LinearLayout.HORIZONTAL);
+        whiteRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView whiteLabel = text("STOP ON WHITE RETURN", 13, TEXT, true);
+        whiteRow.addView(whiteLabel, new LinearLayout.LayoutParams(0, -2, 1f));
+        Switch white = new Switch(this);
+        white.setChecked(capabilitySettings.robotLightStopOnWhiteReturn());
+        white.setOnCheckedChangeListener((buttonView, enabled) -> {
+            capabilitySettings.setRobotLightStopOnWhiteReturn(enabled);
+            GlobalRobotOutboundThrottle.instance().setLightStopOnWhiteReturn(enabled);
+            toast(enabled ? "Visual light throttle linked to white return" : "Visual light throttle uses duration");
+        });
+        whiteRow.addView(white, new LinearLayout.LayoutParams(-2, -2));
+        add(card, whiteRow, 12);
+
+        add(card, text("START DELAY RANGE • ms", 11, ACCENT, true), 16);
+        LinearLayout startRow = inputRow();
+        lightThrottleStartMinInput = numericInput("Min Start Delay", capabilitySettings.robotLightStartMinMs());
+        lightThrottleStartMaxInput = numericInput("Max Start Delay", capabilitySettings.robotLightStartMaxMs());
+        addTwoInputs(startRow, lightThrottleStartMinInput, lightThrottleStartMaxInput);
+        add(card, startRow, 8);
+
+        add(card, text("DURATION RANGE • ms", 11, ACCENT, true), 16);
+        LinearLayout durationRow = inputRow();
+        lightThrottleDurationMinInput = numericInput("Min Duration", capabilitySettings.robotLightDurationMinMs());
+        lightThrottleDurationMaxInput = numericInput("Max Duration", capabilitySettings.robotLightDurationMaxMs());
+        addTwoInputs(durationRow, lightThrottleDurationMinInput, lightThrottleDurationMaxInput);
+        add(card, durationRow, 8);
+
+        add(card, text(
+                "Allowed: 1–500 ms, minimum ≤ maximum. For visual Robot Freeze, STOP ON WHITE RETURN ignores Duration and keeps at least 1 ms until white returns. Periodic Robot Freeze always uses Duration because it has no white-return lifecycle.",
+                11, MUTED, false), 8);
+        TextView save = button("SAVE LIGHT THROTTLE", true);
+        save.setOnClickListener(v -> saveLightThrottleRanges());
+        add(card, save, 14);
+        return card;
+    }
+
+    private void saveLightThrottleRanges() {
+        if (lightThrottleStartMinInput == null || lightThrottleStartMaxInput == null
+                || lightThrottleDurationMinInput == null || lightThrottleDurationMaxInput == null) return;
+        Integer startMin = parseRequired(lightThrottleStartMinInput, "Minimum start delay is required");
+        Integer startMax = parseRequired(lightThrottleStartMaxInput, "Maximum start delay is required");
+        Integer durationMin = parseRequired(lightThrottleDurationMinInput, "Minimum duration is required");
+        Integer durationMax = parseRequired(lightThrottleDurationMaxInput, "Maximum duration is required");
+        if (startMin == null || startMax == null || durationMin == null || durationMax == null) return;
+
+        int low = GlobalRobotOutboundThrottle.MIN_CONFIGURABLE_LIGHT_MS;
+        int high = GlobalRobotOutboundThrottle.MAX_CONFIGURABLE_LIGHT_MS;
+        if (startMin < low || startMin > high) { lightThrottleStartMinInput.setError("Must be 1..500 ms"); return; }
+        if (startMax < low || startMax > high) { lightThrottleStartMaxInput.setError("Must be 1..500 ms"); return; }
+        if (durationMin < low || durationMin > high) { lightThrottleDurationMinInput.setError("Must be 1..500 ms"); return; }
+        if (durationMax < low || durationMax > high) { lightThrottleDurationMaxInput.setError("Must be 1..500 ms"); return; }
+        if (startMin > startMax) { lightThrottleStartMinInput.setError("Minimum must be ≤ maximum"); return; }
+        if (durationMin > durationMax) { lightThrottleDurationMinInput.setError("Minimum must be ≤ maximum"); return; }
+
+        capabilitySettings.setRobotLightThrottleRange(startMin, startMax, durationMin, durationMax);
+        GlobalRobotOutboundThrottle.instance().setLightRange(startMin, startMax, durationMin, durationMax);
+        toast("Robot light throttle ranges saved");
+    }
+
     private View outboundThrottleCard() {
         LinearLayout card = card();
         add(card, text("ROBOT WHITE-RETURN OUTBOUND THROTTLE", 11, ACCENT, true), 0);
         add(card, text(
-                "Only after a visual Robot Freeze ends on white return: Global OUTBOUND IPv4/UDP gets a 30% skip chance, then one random initial delay and one random duration from the saved ranges. Delay falls irregularly to zero. This card does not change the 30–60 ms light throttle during Freeze or the periodic Robot throttle.",
+                "Only after a visual Robot Freeze ends on white return: Global OUTBOUND IPv4/UDP gets a 30% skip chance, then one random initial delay and one random duration from the saved ranges. Delay falls irregularly to zero. This card is independent from the light-throttle card and the periodic post-Freeze profile.",
                 12, MUTED, false), 8);
 
         LinearLayout row = new LinearLayout(this);
