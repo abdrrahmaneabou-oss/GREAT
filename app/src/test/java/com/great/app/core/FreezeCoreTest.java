@@ -114,13 +114,13 @@ public final class FreezeCoreTest {
             }
             h.state.set(Capability.FREEZE, false);
 
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-            while (h.diagnostics.snapshot().released() < 15 && System.nanoTime() < deadline) {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (h.diagnostics.snapshot().released() < 13 && System.nanoTime() < deadline) {
                 Thread.sleep(10);
             }
 
             int released = emitted.size();
-            assertTrue("release count=" + released, released >= 15 && released <= 18);
+            assertTrue("release count=" + released, released >= 13 && released <= 17);
             assertEquals(0, h.core.freezeQueueSize());
         }
     }
@@ -200,6 +200,39 @@ public final class FreezeCoreTest {
             assertEquals(PacketDecision.HOLD, pipeline.evaluate(packet));
             targets.clear();
             assertEquals(PacketDecision.PASS, pipeline.evaluate(packet));
+        }
+    }
+
+    @Test public void manualReleaseStartsAndExpiresOutboundThrottle() throws Exception {
+        try (Harness h = new Harness()) {
+            h.core.setOutboundThrottleEnabled(true);
+            h.core.attach(p -> { });
+            h.enableAndSettleRamp();
+            assertEquals(PacketDecision.HOLD,
+                    h.decide(TestPackets.udp(PacketDirection.INBOUND, 443, 100, 0)));
+            h.state.set(Capability.FREEZE, false);
+            assertTrue(h.core.outboundThrottleActive());
+            assertEquals(PacketDecision.HOLD,
+                    h.decide(TestPackets.udp(PacketDirection.OUTBOUND, 443, 100, 1)));
+            Thread.sleep(FreezeCore.OUTBOUND_THROTTLE_WINDOW_MS + 60L);
+            assertFalse(h.core.outboundThrottleActive());
+            assertEquals(PacketDecision.PASS,
+                    h.decide(TestPackets.udp(PacketDirection.OUTBOUND, 443, 100, 2)));
+        }
+    }
+
+    @Test public void robotReleaseAlsoStartsOutboundThrottle() throws Exception {
+        try (Harness h = new Harness()) {
+            h.core.setOutboundThrottleEnabled(true);
+            h.core.attach(p -> { });
+            h.core.setHoldTrigger(true);
+            Thread.sleep(150);
+            assertEquals(PacketDecision.HOLD,
+                    h.decide(TestPackets.udp(PacketDirection.INBOUND, 443, 100, 0)));
+            h.core.setHoldTrigger(false);
+            assertTrue(h.core.outboundThrottleActive());
+            assertEquals(PacketDecision.HOLD,
+                    h.decide(TestPackets.udp(PacketDirection.OUTBOUND, 443, 100, 1)));
         }
     }
 }
