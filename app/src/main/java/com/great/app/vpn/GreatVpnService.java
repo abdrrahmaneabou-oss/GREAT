@@ -96,12 +96,18 @@ public final class GreatVpnService extends VpnService {
                     tuning.freezePayloadMaxFrom(), tuning.freezePayloadMaxTo());
             engine.freezeCore().setRandomPayloadRangeEnabled(tuning.freezePayloadRandomEnabled());
 
-            // Legacy FreezeCore outbound throttle is not controlled by this card anymore.
+            // Legacy FreezeCore outbound throttle is not controlled by these Robot cards.
             engine.freezeCore().setOutboundThrottleEnabled(false);
 
             GlobalRobotOutboundThrottle robotThrottle = GlobalRobotOutboundThrottle.instance();
-            // Runtime gate stays ON while VPN is active so light + periodic Robot throttles remain independent.
             robotThrottle.setFeatureEnabled(true);
+
+            robotThrottle.setLightEnabled(tuning.robotLightThrottleEnabled());
+            robotThrottle.setLightStopOnWhiteReturn(tuning.robotLightStopOnWhiteReturn());
+            robotThrottle.setLightRange(
+                    tuning.robotLightStartMinMs(), tuning.robotLightStartMaxMs(),
+                    tuning.robotLightDurationMinMs(), tuning.robotLightDurationMaxMs());
+
             robotThrottle.setVisualPostEnabled(tuning.outboundReleaseThrottleEnabled());
             robotThrottle.setVisualPostRange(
                     tuning.robotWhiteReturnStartMinMs(), tuning.robotWhiteReturnStartMaxMs(),
