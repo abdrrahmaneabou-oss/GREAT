@@ -1,7 +1,5 @@
 package com.great.app.monitor;
 
-import com.great.app.transport.GlobalRobotOutboundThrottle;
-
 import java.util.ArrayDeque;
 
 /**
@@ -26,11 +24,8 @@ public final class PixelTriggerMonitorEngine {
 
     public enum State { WAITING_FOR_WHITE, ARMED, FIRED }
 
-    public interface Listener {
-        void onStateChanged(State state);
-    }
+    public interface Listener { void onStateChanged(State state); }
 
-    /** Five packed RGB probes. Probe 0 is always the exact visible sensor center. */
     public static final class Sample {
         private final int[] probes;
         private final int count;
@@ -58,16 +53,10 @@ public final class PixelTriggerMonitorEngine {
         public float whiteRatio() { return whiteRatio; }
         public int averageLuminance() { return averageLuminance; }
 
-        /**
-         * Full-display MediaProjection can capture GREAT's own thin sensor ring. The four outer
-         * probes can therefore see the ring color while the exact center still sees the real pixel
-         * underneath. Keep the original five-point rule, but let a white center pixel arm too.
-         */
         public boolean isArmingWhite() {
             return count > 0 && (isPackedWhite(probes[0]) || whiteRatio >= ARM_WHITE_COVERAGE);
         }
 
-        /** Same protection for firing: a dark center must not be hidden by bright ring probes. */
         public boolean isFireLuminance() {
             return count > 0 && (luminance(probes[0]) <= FIRE_MAX_LUMINANCE
                     || averageLuminance <= FIRE_MAX_LUMINANCE);
@@ -76,11 +65,15 @@ public final class PixelTriggerMonitorEngine {
 
     private final Listener listener;
     private final ArrayDeque<Sample> whiteFrames = new ArrayDeque<>();
+    private final RobotFreezeOrchestrator robotFreeze = RobotFreezeOrchestrator.instance();
     private State state = State.WAITING_FOR_WHITE;
     private Sample baseline;
+    private boolean skippedVisualCycle;
+    private boolean visualFreezeRan;
 
     public PixelTriggerMonitorEngine(Listener listener) {
         this.listener = listener;
+        robotFreeze.ensureStarted();
     }
 
     public State state() { return state; }
@@ -88,6 +81,9 @@ public final class PixelTriggerMonitorEngine {
     public void reset() {
         whiteFrames.clear();
         baseline = null;
+        skippedVisualCycle = false;
+        visualFreezeRan = false;
+        robotFreeze.resetVisualCycle();
         setState(State.WAITING_FOR_WHITE);
     }
 
@@ -95,14 +91,35 @@ public final class PixelTriggerMonitorEngine {
         if (sample == null || sample.count() == 0) return;
         switch (state) {
             case WAITING_FOR_WHITE -> waitForWhite(sample, REQUIRED_ARM_FRAMES);
-            case ARMED -> {
-                whiteFrames.clear();
-                if (baseline != null && isProbeDepartureFrom(sample, baseline) && sample.isFireLuminance()) {
-                    setState(State.FIRED);
-                }
-            }
+            case ARMED -> processArmed(sample);
             case FIRED -> waitForWhite(sample, REQUIRED_REARM_FRAMES);
         }
+    }
+
+    private void processArmed(Sample sample) {
+        whiteFrames.clear();
+
+        if (skippedVisualCycle) {
+            if (sample.isArmingWhite()) {
+                skippedVisualCycle = false;
+                robotFreeze.finishVisualCycle(false);
+            }
+            return;
+        }
+
+        if (baseline == null || !isProbeDepartureFrom(sample, baseline) || !sample.isFireLuminance()) return;
+
+        // A short periodic Robot Freeze owns this moment; if the pixel is still dark after it ends,
+        // the next frame may begin a normal visual cycle.
+        if (robotFreeze.periodicFreezeActive()) return;
+
+        if (!robotFreeze.allowVisualFreeze()) {
+            skippedVisualCycle = true;
+            return;
+        }
+
+        visualFreezeRan = true;
+        setState(State.FIRED);
     }
 
     private void waitForWhite(Sample sample, int requiredFrames) {
@@ -122,18 +139,23 @@ public final class PixelTriggerMonitorEngine {
         if (state == next) return;
         State previous = state;
         state = next;
-        if (previous == State.FIRED && next == State.ARMED) {
-            GlobalRobotOutboundThrottle.instance().startFromRobotWhiteReturn();
-        }
+
+        // Let the service change FreezeCore's real hold state first. The throttle is then coupled
+        // to the actual Robot Freeze, not merely to a detector state transition.
         if (listener != null) listener.onStateChanged(next);
+
+        if (previous == State.ARMED && next == State.FIRED && visualFreezeRan) {
+            robotFreeze.visualFreezeStarted();
+        } else if (previous == State.FIRED && next == State.ARMED) {
+            boolean ran = visualFreezeRan;
+            visualFreezeRan = false;
+            robotFreeze.finishVisualCycle(ran);
+        }
     }
 
     static boolean isProbeDepartureFrom(Sample current, Sample reference) {
         int count = Math.min(Math.min(current.count(), reference.count()), MAX_PROBE_POINTS);
         if (count <= 0) return false;
-
-        // Probe 0 is the exact sensor center. If it changes, that is sufficient evidence even when
-        // the surrounding probes are contaminated by the monitor ring captured in full-display mode.
         if (probePointChanged(reference.probe(0), current.probe(0))) return true;
 
         int quorum = count >= 5 ? 3 : (count >= 3 ? 2 : 1);
