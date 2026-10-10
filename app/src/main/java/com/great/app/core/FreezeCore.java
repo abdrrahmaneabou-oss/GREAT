@@ -14,6 +14,37 @@ import java.util.concurrent.TimeUnit;
 /** Incoming IPv4/UDP hold and release, using the verified FOX Freeze rules. */
 public final class FreezeCore implements AutoCloseable {
     public interface OutputSink { void emit(PacketEnvelope packet) throws Exception; }
+    public interface CycleListener { void onCycleCompleted(CycleStats stats); }
+
+    public static final class CycleStats {
+        private final long startedAtMillis;
+        private final String source;
+        private final int arrived;
+        private final int frozen;
+        private final int dropped;
+        private final int released;
+        private final int evicted;
+
+        CycleStats(long startedAtMillis, String source, int arrived, int frozen,
+                   int dropped, int released, int evicted) {
+            this.startedAtMillis = startedAtMillis;
+            this.source = source;
+            this.arrived = arrived;
+            this.frozen = frozen;
+            this.dropped = dropped;
+            this.released = released;
+            this.evicted = evicted;
+        }
+
+        public long startedAtMillis() { return startedAtMillis; }
+        public String source() { return source; }
+        public int arrived() { return arrived; }
+        public int frozen() { return frozen; }
+        public int dropped() { return dropped; }
+        public int released() { return released; }
+        public int evicted() { return evicted; }
+    }
+
     public static final int CAPACITY = 10_000;
     public static final int DEFAULT_DURATION_SECONDS = 5;
     public static final int MIN_DURATION_SECONDS = 1;
@@ -58,13 +89,12 @@ public final class FreezeCore implements AutoCloseable {
     private final ScheduledExecutorService outboundDelays = Executors.newSingleThreadScheduledExecutor(r -> daemon(r, "GREAT-Outbound-Throttle"));
     private final ExecutorService releases = Executors.newSingleThreadExecutor(r -> daemon(r, "GREAT-Freeze-Release"));
     private OutputSink sink;
+    private CycleListener cycleListener;
     private ScheduledFuture<?> timeout;
     private int durationSeconds = DEFAULT_DURATION_SECONDS;
 
-    // Saved fixed-mode bounds.
     private int fixedPayloadMin = DEFAULT_PAYLOAD_MIN;
     private int fixedPayloadMax = DEFAULT_PAYLOAD_MAX;
-    // Active bounds used by shouldHold() for the current Freeze cycle.
     private int payloadMin = DEFAULT_PAYLOAD_MIN;
     private int payloadMax = DEFAULT_PAYLOAD_MAX;
     private boolean randomizedPayloadRangeEnabled;
@@ -73,22 +103,23 @@ public final class FreezeCore implements AutoCloseable {
     private int randomPayloadMaxFrom = DEFAULT_RANDOM_PAYLOAD_MAX_FROM;
     private int randomPayloadMaxTo = DEFAULT_RANDOM_PAYLOAD_MAX_TO;
 
-    // Optional outbound delay window that begins exactly when an inbound Freeze release begins.
     private boolean outboundThrottleEnabled;
     private long outboundThrottleStartedNanos;
     private long outboundThrottleEndsNanos;
     private long outboundThrottlePreviousDelayNanos;
 
-    // Manual Freeze is controlled only by CapabilityController / the visible Freeze button.
+    private boolean cycleActive;
+    private long cycleStartedAtMillis;
+    private String cycleSource = "UNKNOWN";
+    private int cycleArrived;
+    private int cycleFrozen;
+    private int cycleEvicted;
+
     private boolean manualEnabled;
-    // The visual monitor is a second independent source and never changes the manual button state.
     private boolean visualMonitorHold;
     private boolean closed;
     private long generation;
 
-    // A new ramp is created only when effective Freeze transitions OFF -> ON. It does not alter
-    // packet eligibility rules; it only decides whether an otherwise eligible packet is held during
-    // the first 70..130 ms. After the window expires, normal full Freeze resumes automatically.
     private long rampStartedNanos;
     private long rampDurationNanos;
     private int rampStage1HoldPercent;
@@ -115,13 +146,19 @@ public final class FreezeCore implements AutoCloseable {
                 if (delayNanos <= 0L) return PacketDecision.PASS;
                 byte[] copy = new byte[packet.length()];
                 System.arraycopy(packet.data(), 0, copy, 0, copy.length);
-                PacketEnvelope delayed = new PacketEnvelope(
-                        copy, copy.length, PacketDirection.OUTBOUND, packet.monotonicNanos());
+                PacketEnvelope delayed = new PacketEnvelope(copy, copy.length,
+                        PacketDirection.OUTBOUND, packet.monotonicNanos());
                 long session = generation;
                 diagnostics.scheduled();
                 outboundDelays.schedule(() -> emitDelayedOutbound(delayed, session),
                         delayNanos, TimeUnit.NANOSECONDS);
                 return PacketDecision.HOLD;
+            }
+        }
+
+        if (packet.direction() == PacketDirection.INBOUND) {
+            synchronized (lock) {
+                if (!closed && cycleActive && effectiveLocked()) cycleArrived++;
             }
         }
 
@@ -139,19 +176,19 @@ public final class FreezeCore implements AutoCloseable {
             if (!rampAllowsHoldLocked(System.nanoTime())) return PacketDecision.PASS;
             if (buffer.size() == CAPACITY) {
                 buffer.removeFirst();
+                cycleEvicted++;
                 diagnostics.schedulerRejected();
             }
             byte[] copy = new byte[packet.length()];
             System.arraycopy(packet.data(), 0, copy, 0, copy.length);
             buffer.addLast(new PacketEnvelope(copy, copy.length, packet.direction(), packet.monotonicNanos()));
+            cycleFrozen++;
             diagnostics.scheduled();
             return PacketDecision.HOLD;
         }
     }
 
-    boolean shouldHold(int payloadLength) {
-        return payloadLength > payloadMin && payloadLength < payloadMax;
-    }
+    boolean shouldHold(int payloadLength) { return payloadLength > payloadMin && payloadLength < payloadMax; }
 
     public void setPayloadRange(int min, int max) {
         if (min < MIN_PAYLOAD_LIMIT || max > MAX_PAYLOAD_LIMIT || min >= max) {
@@ -160,17 +197,13 @@ public final class FreezeCore implements AutoCloseable {
         synchronized (lock) {
             fixedPayloadMin = min;
             fixedPayloadMax = max;
-            if (!randomizedPayloadRangeEnabled) {
-                payloadMin = min;
-                payloadMax = max;
-            }
+            if (!randomizedPayloadRangeEnabled) { payloadMin = min; payloadMax = max; }
         }
     }
 
     public void setRandomPayloadRange(int minFrom, int minTo, int maxFrom, int maxTo) {
         if (!validRandomPayloadRange(minFrom, minTo, maxFrom, maxTo)) {
-            throw new IllegalArgumentException(
-                    "Random payload ranges must stay inside 20..500 and minimum range must remain below maximum range");
+            throw new IllegalArgumentException("Random payload ranges must stay inside 20..500 and minimum range must remain below maximum range");
         }
         synchronized (lock) {
             randomPayloadMinFrom = minFrom;
@@ -183,17 +216,11 @@ public final class FreezeCore implements AutoCloseable {
     public void setRandomPayloadRangeEnabled(boolean enabled) {
         synchronized (lock) {
             randomizedPayloadRangeEnabled = enabled;
-            if (!enabled) {
-                payloadMin = fixedPayloadMin;
-                payloadMax = fixedPayloadMax;
-            }
+            if (!enabled) { payloadMin = fixedPayloadMin; payloadMax = fixedPayloadMax; }
         }
     }
 
-    public boolean randomPayloadRangeEnabled() {
-        synchronized (lock) { return randomizedPayloadRangeEnabled; }
-    }
-
+    public boolean randomPayloadRangeEnabled() { synchronized (lock) { return randomizedPayloadRangeEnabled; } }
     public int payloadMin() { synchronized (lock) { return payloadMin; } }
     public int payloadMax() { synchronized (lock) { return payloadMax; } }
 
@@ -204,9 +231,7 @@ public final class FreezeCore implements AutoCloseable {
         }
     }
 
-    public boolean outboundThrottleEnabled() {
-        synchronized (lock) { return outboundThrottleEnabled; }
-    }
+    public boolean outboundThrottleEnabled() { synchronized (lock) { return outboundThrottleEnabled; } }
 
     public boolean outboundThrottleActive() {
         synchronized (lock) {
@@ -219,24 +244,25 @@ public final class FreezeCore implements AutoCloseable {
         }
     }
 
+    public void setCycleListener(CycleListener listener) { synchronized (lock) { cycleListener = listener; } }
+
     public void onCapabilityChanged(Capability capability, boolean value) {
         if (capability != Capability.FREEZE) return;
         synchronized (lock) {
             if (closed) return;
             boolean wasEffective = effectiveLocked();
             manualEnabled = value;
-
             if (timeout != null) timeout.cancel(false);
             timeout = null;
             if (value) {
                 long activation = controller.snapshot().revision();
-                timeout = timers.schedule(() -> controller.setIfRevision(
-                        Capability.FREEZE, false, activation), durationSeconds, TimeUnit.SECONDS);
+                timeout = timers.schedule(() -> controller.setIfRevision(Capability.FREEZE, false, activation),
+                        durationSeconds, TimeUnit.SECONDS);
             }
-
             boolean nowEffective = effectiveLocked();
             if (!wasEffective && nowEffective) {
                 buffer.clear();
+                startCycleLocked("MANUAL");
                 choosePayloadRangeForCycleLocked();
                 startRampLocked();
             } else if (wasEffective && !nowEffective) {
@@ -246,10 +272,6 @@ public final class FreezeCore implements AutoCloseable {
         }
     }
 
-    /**
-     * Visual-monitor source only. FIRED sets this true; returning to the ARMED/green state sets it
-     * false. It never changes CapabilityController, so manual Freeze keeps its own state and timer.
-     */
     public void setHoldTrigger(boolean active) {
         synchronized (lock) {
             if (closed || visualMonitorHold == active) return;
@@ -258,6 +280,7 @@ public final class FreezeCore implements AutoCloseable {
             boolean nowEffective = effectiveLocked();
             if (!wasEffective && nowEffective) {
                 buffer.clear();
+                startCycleLocked("ROBOT");
                 choosePayloadRangeForCycleLocked();
                 startRampLocked();
             } else if (wasEffective && !nowEffective) {
@@ -267,49 +290,50 @@ public final class FreezeCore implements AutoCloseable {
         }
     }
 
-    public boolean holdTriggerActive() {
-        synchronized (lock) { return visualMonitorHold; }
+    public boolean holdTriggerActive() { synchronized (lock) { return visualMonitorHold; } }
+    public boolean effectiveActive() { synchronized (lock) { return effectiveLocked(); } }
+    private boolean effectiveLocked() { return manualEnabled || visualMonitorHold; }
+
+    private void startCycleLocked(String source) {
+        cycleActive = true;
+        cycleStartedAtMillis = System.currentTimeMillis();
+        cycleSource = source;
+        cycleArrived = 0;
+        cycleFrozen = 0;
+        cycleEvicted = 0;
     }
 
-    public boolean effectiveActive() {
-        synchronized (lock) { return effectiveLocked(); }
-    }
-
-    private boolean effectiveLocked() {
-        return manualEnabled || visualMonitorHold;
+    private CycleWork finishCycleLocked(ArrayList<PacketEnvelope> packets) {
+        CycleWork work = new CycleWork(cycleStartedAtMillis, cycleSource, cycleArrived,
+                cycleFrozen, cycleEvicted, packets);
+        cycleActive = false;
+        cycleStartedAtMillis = 0L;
+        cycleSource = "UNKNOWN";
+        cycleArrived = 0;
+        cycleFrozen = 0;
+        cycleEvicted = 0;
+        return work;
     }
 
     private void choosePayloadRangeForCycleLocked() {
-        if (!randomizedPayloadRangeEnabled) {
-            payloadMin = fixedPayloadMin;
-            payloadMax = fixedPayloadMax;
-            return;
-        }
+        if (!randomizedPayloadRangeEnabled) { payloadMin = fixedPayloadMin; payloadMax = fixedPayloadMax; return; }
         payloadMin = randomInclusiveLocked(randomPayloadMinFrom, randomPayloadMinTo);
         payloadMax = randomInclusiveLocked(randomPayloadMaxFrom, randomPayloadMaxTo);
     }
 
-    private int randomInclusiveLocked(int from, int to) {
-        return from == to ? from : from + rng.nextInt(to - from + 1);
-    }
+    private int randomInclusiveLocked(int from, int to) { return from == to ? from : from + rng.nextInt(to - from + 1); }
 
     private static boolean validRandomPayloadRange(int minFrom, int minTo, int maxFrom, int maxTo) {
-        return minFrom >= MIN_PAYLOAD_LIMIT
-                && minFrom <= minTo
-                && minTo < maxFrom
-                && maxFrom <= maxTo
-                && maxTo <= MAX_PAYLOAD_LIMIT;
+        return minFrom >= MIN_PAYLOAD_LIMIT && minFrom <= minTo && minTo < maxFrom
+                && maxFrom <= maxTo && maxTo <= MAX_PAYLOAD_LIMIT;
     }
 
     private void startRampLocked() {
-        int durationMs = MIN_RAMP_DURATION_MS
-                + rng.nextInt(MAX_RAMP_DURATION_MS - MIN_RAMP_DURATION_MS + 1);
+        int durationMs = MIN_RAMP_DURATION_MS + rng.nextInt(MAX_RAMP_DURATION_MS - MIN_RAMP_DURATION_MS + 1);
         rampStartedNanos = System.nanoTime();
         rampDurationNanos = TimeUnit.MILLISECONDS.toNanos(durationMs);
-        rampStage1HoldPercent = MIN_RAMP_STAGE1_HOLD_PERCENT
-                + rng.nextInt(MAX_RAMP_STAGE1_HOLD_PERCENT - MIN_RAMP_STAGE1_HOLD_PERCENT + 1);
-        rampStage2HoldPercent = MIN_RAMP_STAGE2_HOLD_PERCENT
-                + rng.nextInt(MAX_RAMP_STAGE2_HOLD_PERCENT - MIN_RAMP_STAGE2_HOLD_PERCENT + 1);
+        rampStage1HoldPercent = MIN_RAMP_STAGE1_HOLD_PERCENT + rng.nextInt(MAX_RAMP_STAGE1_HOLD_PERCENT - MIN_RAMP_STAGE1_HOLD_PERCENT + 1);
+        rampStage2HoldPercent = MIN_RAMP_STAGE2_HOLD_PERCENT + rng.nextInt(MAX_RAMP_STAGE2_HOLD_PERCENT - MIN_RAMP_STAGE2_HOLD_PERCENT + 1);
     }
 
     private void clearRampLocked() {
@@ -322,20 +346,14 @@ public final class FreezeCore implements AutoCloseable {
     private boolean rampAllowsHoldLocked(long nowNanos) {
         if (rampDurationNanos <= 0L || rampStartedNanos <= 0L) return true;
         long elapsed = nowNanos - rampStartedNanos;
-        if (elapsed < 0L || elapsed >= rampDurationNanos) {
-            clearRampLocked();
-            return true;
-        }
+        if (elapsed < 0L || elapsed >= rampDurationNanos) { clearRampLocked(); return true; }
         long firstHalf = rampDurationNanos / 2L;
         int holdPercent = elapsed < firstHalf ? rampStage1HoldPercent : rampStage2HoldPercent;
         return rng.nextInt(100) < holdPercent;
     }
 
     private void startOutboundThrottleLocked() {
-        if (!outboundThrottleEnabled) {
-            clearOutboundThrottleLocked();
-            return;
-        }
+        if (!outboundThrottleEnabled) { clearOutboundThrottleLocked(); return; }
         long now = System.nanoTime();
         outboundThrottleStartedNanos = now;
         outboundThrottleEndsNanos = now + OUTBOUND_THROTTLE_WINDOW_NANOS;
@@ -348,27 +366,15 @@ public final class FreezeCore implements AutoCloseable {
         outboundThrottlePreviousDelayNanos = 0L;
     }
 
-    /**
-     * Produces a strictly decreasing random delay for every outbound packet in one release window.
-     * A time envelope guarantees the delay reaches zero by 300 ms, while the random downward step
-     * prevents a fixed, mechanically linear sequence between packets.
-     */
     private long nextOutboundThrottleDelayLocked(long nowNanos) {
-        if (outboundThrottleStartedNanos <= 0L || outboundThrottleEndsNanos <= 0L
-                || nowNanos >= outboundThrottleEndsNanos) {
+        if (outboundThrottleStartedNanos <= 0L || outboundThrottleEndsNanos <= 0L || nowNanos >= outboundThrottleEndsNanos) {
             clearOutboundThrottleLocked();
             return 0L;
         }
-
         long remaining = outboundThrottleEndsNanos - nowNanos;
-        long timeCeiling = (OUTBOUND_THROTTLE_MAX_DELAY_NANOS * remaining)
-                / OUTBOUND_THROTTLE_WINDOW_NANOS;
+        long timeCeiling = (OUTBOUND_THROTTLE_MAX_DELAY_NANOS * remaining) / OUTBOUND_THROTTLE_WINDOW_NANOS;
         long strictCeiling = Math.min(timeCeiling, outboundThrottlePreviousDelayNanos - 1L);
-        if (strictCeiling <= 0L) {
-            outboundThrottlePreviousDelayNanos = 0L;
-            return 0L;
-        }
-
+        if (strictCeiling <= 0L) { outboundThrottlePreviousDelayNanos = 0L; return 0L; }
         long maxRandomStep = Math.min(OUTBOUND_RANDOM_STEP_MAX_NANOS, strictCeiling);
         long randomStep = 1L + (long) (rng.nextDouble() * maxRandomStep);
         long next = Math.max(1L, strictCeiling - randomStep + 1L);
@@ -382,84 +388,99 @@ public final class FreezeCore implements AutoCloseable {
             if (closed || session != generation || sink == null) return;
             output = sink;
         }
-        try {
-            output.emit(packet);
-            diagnostics.released();
-        } catch (Exception ignored) {
-            // The live transport owns fail-closed behavior. A delayed packet is never retried here.
-        }
+        try { output.emit(packet); diagnostics.released(); } catch (Exception ignored) { }
     }
 
     private void releaseBufferedLocked() {
-        if (buffer.isEmpty()) return;
         ArrayList<PacketEnvelope> all = new ArrayList<>(buffer);
         buffer.clear();
+        CycleWork work = finishCycleLocked(all);
         long session = generation;
-        startOutboundThrottleLocked();
-        releases.execute(() -> release(all, session));
+        if (!all.isEmpty()) startOutboundThrottleLocked();
+        releases.execute(() -> release(work, session));
     }
 
-    private void release(ArrayList<PacketEnvelope> all, long session) {
-        if (all.isEmpty()) return;
-
-        int dropPercent = MIN_RELEASE_DROP_PERCENT
-                + rng.nextInt(MAX_RELEASE_DROP_PERCENT - MIN_RELEASE_DROP_PERCENT + 1);
-        int dropCount = Math.round(all.size() * (dropPercent / 100f));
-        dropCount = Math.max(0, Math.min(dropCount, all.size()));
-        if (dropCount > 0) {
-            int maxStart = all.size() - dropCount;
-            int dropStart = maxStart == 0 ? 0 : rng.nextInt(maxStart + 1);
-            all.subList(dropStart, dropStart + dropCount).clear();
+    private void release(CycleWork work, long session) {
+        ArrayList<PacketEnvelope> all = work.packets;
+        try {
+            if (!all.isEmpty()) {
+                int dropPercent = MIN_RELEASE_DROP_PERCENT + rng.nextInt(MAX_RELEASE_DROP_PERCENT - MIN_RELEASE_DROP_PERCENT + 1);
+                int dropCount = Math.round(all.size() * (dropPercent / 100f));
+                dropCount = Math.max(0, Math.min(dropCount, all.size()));
+                work.dropped = dropCount;
+                if (dropCount > 0) {
+                    int maxStart = all.size() - dropCount;
+                    int dropStart = maxStart == 0 ? 0 : rng.nextInt(maxStart + 1);
+                    all.subList(dropStart, dropStart + dropCount).clear();
+                }
+                if (all.size() > 1) Collections.shuffle(all, rng);
+                int index = 0;
+                while (index < all.size()) {
+                    int burstSize = MIN_RELEASE_BURST + rng.nextInt(MAX_RELEASE_BURST - MIN_RELEASE_BURST + 1);
+                    int burstEnd = Math.min(all.size(), index + burstSize);
+                    while (index < burstEnd) {
+                        OutputSink output;
+                        synchronized (lock) {
+                            if (closed || session != generation || sink == null) return;
+                            output = sink;
+                        }
+                        try {
+                            output.emit(all.get(index));
+                            diagnostics.released();
+                            work.released++;
+                        } catch (Exception e) { return; }
+                        index++;
+                    }
+                    if (index < all.size()) {
+                        int delayMs = MIN_RELEASE_DELAY_MS + rng.nextInt(MAX_RELEASE_DELAY_MS - MIN_RELEASE_DELAY_MS + 1);
+                        try { Thread.sleep(delayMs); }
+                        catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                    }
+                }
+            }
+        } finally {
+            publishCycle(work);
         }
+    }
 
-        if (all.size() > 1) Collections.shuffle(all, rng);
+    private void publishCycle(CycleWork work) {
+        CycleListener listener;
+        synchronized (lock) { listener = cycleListener; }
+        if (listener == null) return;
+        try {
+            listener.onCycleCompleted(new CycleStats(work.startedAtMillis, work.source, work.arrived,
+                    work.frozen, work.dropped, work.released, work.evicted));
+        } catch (RuntimeException ignored) { }
+    }
 
-        int index = 0;
-        while (index < all.size()) {
-            int burstSize = MIN_RELEASE_BURST + rng.nextInt(MAX_RELEASE_BURST - MIN_RELEASE_BURST + 1);
-            int burstEnd = Math.min(all.size(), index + burstSize);
+    private static final class CycleWork {
+        final long startedAtMillis;
+        final String source;
+        final int arrived;
+        final int frozen;
+        final int evicted;
+        final ArrayList<PacketEnvelope> packets;
+        int dropped;
+        int released;
 
-            while (index < burstEnd) {
-                OutputSink output;
-                synchronized (lock) {
-                    if (closed || session != generation || sink == null) return;
-                    output = sink;
-                }
-                try {
-                    output.emit(all.get(index));
-                    diagnostics.released();
-                } catch (Exception e) {
-                    return;
-                }
-                index++;
-            }
-
-            if (index < all.size()) {
-                int delayMs = MIN_RELEASE_DELAY_MS
-                        + rng.nextInt(MAX_RELEASE_DELAY_MS - MIN_RELEASE_DELAY_MS + 1);
-                try {
-                    Thread.sleep(delayMs);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
-            }
+        CycleWork(long startedAtMillis, String source, int arrived, int frozen, int evicted,
+                  ArrayList<PacketEnvelope> packets) {
+            this.startedAtMillis = startedAtMillis;
+            this.source = source;
+            this.arrived = arrived;
+            this.frozen = frozen;
+            this.evicted = evicted;
+            this.packets = packets;
         }
     }
 
     public void attach(OutputSink output) { synchronized (lock) { sink = Objects.requireNonNull(output); } }
-
-    public void detach(OutputSink output) {
-        synchronized (lock) { if (sink == output) { sink = null; generation++; } }
-    }
-
+    public void detach(OutputSink output) { synchronized (lock) { if (sink == output) { sink = null; generation++; } } }
     public int freezeQueueSize() { synchronized (lock) { return buffer.size(); } }
     public int freezeDurationSeconds() { synchronized (lock) { return durationSeconds; } }
 
     public void setFreezeDurationSeconds(int seconds) {
-        if (seconds < MIN_DURATION_SECONDS || seconds > MAX_DURATION_SECONDS) {
-            throw new IllegalArgumentException("duration must be 1..10 seconds");
-        }
+        if (seconds < MIN_DURATION_SECONDS || seconds > MAX_DURATION_SECONDS) throw new IllegalArgumentException("duration must be 1..10 seconds");
         synchronized (lock) { durationSeconds = seconds; }
     }
 
@@ -467,16 +488,19 @@ public final class FreezeCore implements AutoCloseable {
         synchronized (lock) {
             manualEnabled = false;
             visualMonitorHold = false;
+            cycleActive = false;
+            cycleStartedAtMillis = 0L;
+            cycleSource = "UNKNOWN";
+            cycleArrived = 0;
+            cycleFrozen = 0;
+            cycleEvicted = 0;
             clearRampLocked();
             clearOutboundThrottleLocked();
             generation++;
             if (timeout != null) timeout.cancel(false);
             timeout = null;
             buffer.clear();
-            if (!randomizedPayloadRangeEnabled) {
-                payloadMin = fixedPayloadMin;
-                payloadMax = fixedPayloadMax;
-            }
+            if (!randomizedPayloadRangeEnabled) { payloadMin = fixedPayloadMin; payloadMax = fixedPayloadMax; }
         }
     }
 
@@ -493,7 +517,5 @@ public final class FreezeCore implements AutoCloseable {
         return t;
     }
 
-    private static int u16(byte[] d, int i) {
-        return ((d[i] & 255) << 8) | (d[i + 1] & 255);
-    }
+    private static int u16(byte[] d, int i) { return ((d[i] & 255) << 8) | (d[i + 1] & 255); }
 }
