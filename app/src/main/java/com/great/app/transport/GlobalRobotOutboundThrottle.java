@@ -1,6 +1,5 @@
 package com.great.app.transport;
 
-import com.great.app.core.GreatEngine;
 import com.great.app.core.PacketDecision;
 import com.great.app.core.PacketDirection;
 import com.great.app.core.PacketEnvelope;
@@ -16,7 +15,6 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class GlobalRobotOutboundThrottle {
     public interface OutputSink { void emit(PacketEnvelope packet) throws Exception; }
 
-    /** Defaults for the configurable light throttle that runs in parallel with Robot Freeze. */
     public static final int DEFAULT_LIGHT_START_MIN_MS = 30;
     public static final int DEFAULT_LIGHT_START_MAX_MS = 60;
     public static final int DEFAULT_LIGHT_DURATION_MIN_MS = 300;
@@ -32,17 +30,14 @@ public final class GlobalRobotOutboundThrottle {
     public static final int MIN_DURATION_MS = 200;
     public static final int MAX_DURATION_MS = 350;
 
-    /** Defaults for visual Robot white-return post-Freeze throttle. */
     public static final int DEFAULT_VISUAL_POST_START_MIN_MS = 75;
     public static final int DEFAULT_VISUAL_POST_START_MAX_MS = 175;
     public static final int DEFAULT_VISUAL_POST_DURATION_MIN_MS = 200;
     public static final int DEFAULT_VISUAL_POST_DURATION_MAX_MS = 350;
     public static final int MIN_CONFIGURABLE_POST_MS = 1;
     public static final int MAX_CONFIGURABLE_POST_MS = 5000;
-
     public static final int POST_FREEZE_SKIP_PERCENT = 30;
 
-    private enum Phase { NONE, LIGHT, POST_FREEZE }
     private enum LightOwner { NONE, VISUAL, PERIODIC }
     private static final GlobalRobotOutboundThrottle INSTANCE = new GlobalRobotOutboundThrottle(new Random());
 
@@ -56,10 +51,8 @@ public final class GlobalRobotOutboundThrottle {
     private final AtomicLong seen = new AtomicLong();
     private final AtomicLong delayed = new AtomicLong();
 
-    /** Overall Robot throttle runtime gate. Enabled while the VPN transport is active. */
     private boolean featureEnabled;
 
-    /** User controls for the light throttle. */
     private boolean lightEnabled = true;
     private boolean lightStopOnWhiteReturn = true;
     private int lightStartMinMs = DEFAULT_LIGHT_START_MIN_MS;
@@ -67,7 +60,6 @@ public final class GlobalRobotOutboundThrottle {
     private int lightDurationMinMs = DEFAULT_LIGHT_DURATION_MIN_MS;
     private int lightDurationMaxMs = DEFAULT_LIGHT_DURATION_MAX_MS;
 
-    /** User switch in the post card: visual white-return post throttle only. */
     private boolean visualPostEnabled = true;
     private int visualPostStartMinMs = DEFAULT_VISUAL_POST_START_MIN_MS;
     private int visualPostStartMaxMs = DEFAULT_VISUAL_POST_START_MAX_MS;
@@ -76,20 +68,21 @@ public final class GlobalRobotOutboundThrottle {
 
     private OutputSink sink;
     private long transportGeneration;
-    private Phase phase = Phase.NONE;
-    private LightOwner lightOwner = LightOwner.NONE;
 
-    private long lightStartedNanos;
+    private boolean lightActive;
+    private LightOwner lightOwner = LightOwner.NONE;
+    private boolean lightWhiteLinkedForCycle;
     private long lightEndsNanos;
     private long lightDurationNanos;
     private long lightStartDelayNanos;
     private long lightPreviousDelayNanos;
     private boolean lightFirstDecision;
 
-    private long cycleEndsNanos;
-    private long cycleDurationNanos;
-    private long startDelayNanos;
-    private long previousDelayNanos;
+    private boolean postActive;
+    private long postEndsNanos;
+    private long postDurationNanos;
+    private long postStartDelayNanos;
+    private long postPreviousDelayNanos;
 
     private GlobalRobotOutboundThrottle(Random rng) { this.rng = Objects.requireNonNull(rng); }
     public static GlobalRobotOutboundThrottle instance() { return INSTANCE; }
@@ -97,33 +90,31 @@ public final class GlobalRobotOutboundThrottle {
     public void setFeatureEnabled(boolean enabled) {
         synchronized (lock) {
             featureEnabled = enabled;
-            if (!enabled) clearCycleLocked();
+            if (!enabled) clearAllLocked();
         }
     }
+
     public boolean featureEnabled() { synchronized (lock) { return featureEnabled; } }
-    public boolean lightActive() {
-        synchronized (lock) {
-            if (!featureEnabled || phase != Phase.LIGHT) return false;
-            if (!lightUsesWhiteReturnLocked() && lightEndsNanos > 0L && System.nanoTime() >= lightEndsNanos) {
-                clearCycleLocked();
-                return false;
-            }
-            return true;
-        }
-    }
     public long seen() { return seen.get(); }
     public long delayed() { return delayed.get(); }
+
+    public boolean lightActive() {
+        synchronized (lock) {
+            expireTimedPhasesLocked(System.nanoTime());
+            return featureEnabled && lightActive;
+        }
+    }
 
     public void setLightEnabled(boolean enabled) {
         synchronized (lock) {
             lightEnabled = enabled;
-            if (!enabled && phase == Phase.LIGHT) clearCycleLocked();
+            if (!enabled) clearLightLocked();
         }
     }
 
     public boolean lightEnabled() { synchronized (lock) { return lightEnabled; } }
 
-    /** Visual Robot only: when enabled, white return is the light-throttle stop event and duration is ignored. */
+    /** Visual Robot only: when enabled, white return ends light throttle and duration is ignored. */
     public void setLightStopOnWhiteReturn(boolean enabled) {
         synchronized (lock) { lightStopOnWhiteReturn = enabled; }
     }
@@ -153,12 +144,13 @@ public final class GlobalRobotOutboundThrottle {
     }
 
     public void setVisualPostEnabled(boolean enabled) {
-        synchronized (lock) { visualPostEnabled = enabled; }
+        synchronized (lock) {
+            visualPostEnabled = enabled;
+            if (!enabled) clearPostLocked();
+        }
     }
 
-    public boolean visualPostEnabled() {
-        synchronized (lock) { return visualPostEnabled; }
-    }
+    public boolean visualPostEnabled() { synchronized (lock) { return visualPostEnabled; } }
 
     public void setVisualPostRange(int startMinMs, int startMaxMs,
                                    int durationMinMs, int durationMaxMs) {
@@ -185,27 +177,22 @@ public final class GlobalRobotOutboundThrottle {
 
     public boolean active() {
         synchronized (lock) {
-            if (!featureEnabled || phase == Phase.NONE) return false;
-            long now = System.nanoTime();
-            if (phase == Phase.LIGHT && !lightUsesWhiteReturnLocked()
-                    && lightEndsNanos > 0L && now >= lightEndsNanos) {
-                clearCycleLocked();
-                return false;
-            }
-            if (phase == Phase.POST_FREEZE && now >= cycleEndsNanos) {
-                clearCycleLocked();
-                return false;
-            }
-            return true;
+            expireTimedPhasesLocked(System.nanoTime());
+            return featureEnabled && (lightActive || postActive);
         }
     }
 
     public void attach(OutputSink output) {
         synchronized (lock) { sink = Objects.requireNonNull(output); transportGeneration++; }
     }
+
     public void detach(OutputSink output) {
         synchronized (lock) {
-            if (sink == output) { sink = null; transportGeneration++; clearCycleLocked(); }
+            if (sink == output) {
+                sink = null;
+                transportGeneration++;
+                clearAllLocked();
+            }
         }
     }
 
@@ -220,47 +207,48 @@ public final class GlobalRobotOutboundThrottle {
     public boolean startLightForFreeze() { return startLightForVisualFreeze(); }
 
     private boolean startLightLocked(LightOwner owner) {
-        if (!featureEnabled || sink == null) { clearCycleLocked(); return false; }
-        if (!lightEnabled) { clearCycleLocked(); return false; }
+        // A new Robot Freeze supersedes the previous cycle's post phase.
+        clearPostLocked();
+        clearLightLocked();
+        if (!featureEnabled || sink == null || !lightEnabled) return false;
 
         int chosenStartMs = randomInclusiveLocked(lightStartMinMs, lightStartMaxMs);
         int chosenDurationMs = randomInclusiveLocked(lightDurationMinMs, lightDurationMaxMs);
         long now = System.nanoTime();
 
-        phase = Phase.LIGHT;
+        lightActive = true;
         lightOwner = owner;
-        lightStartedNanos = now;
+        lightWhiteLinkedForCycle = owner == LightOwner.VISUAL && lightStopOnWhiteReturn;
         lightStartDelayNanos = TimeUnit.MILLISECONDS.toNanos(chosenStartMs);
         lightPreviousDelayNanos = lightStartDelayNanos;
         lightFirstDecision = true;
 
-        // White-return linking is meaningful only for visual Robot Freeze. Periodic Freeze always
-        // uses the independently selected duration because there is no white-return lifecycle for it.
-        if (owner == LightOwner.VISUAL && lightStopOnWhiteReturn) {
+        if (lightWhiteLinkedForCycle) {
+            // Duration is deliberately ignored; white return is the stop event.
             lightDurationNanos = 0L;
             lightEndsNanos = 0L;
         } else {
             lightDurationNanos = TimeUnit.MILLISECONDS.toNanos(chosenDurationMs);
             lightEndsNanos = now + lightDurationNanos;
         }
-        clearPostFreezeFieldsLocked();
         return true;
     }
 
-    /** Visual white return immediately ends any light phase, then applies the visual post profile. */
+    /** White return ends light throttle only when the current visual cycle opted into white linking. */
     public boolean finishVisualFreezeAndStartPostThrottle() {
         synchronized (lock) {
-            clearLightFieldsLocked();
+            if (lightActive && lightOwner == LightOwner.VISUAL && lightWhiteLinkedForCycle) {
+                clearLightLocked();
+            }
             return startPostThrottleLocked(true,
                     visualPostStartMinMs, visualPostStartMaxMs,
                     visualPostDurationMinMs, visualPostDurationMaxMs);
         }
     }
 
-    /** Periodic post-Freeze profile remains fixed and independent from both UI throttle cards. */
+    /** Periodic post profile is fixed. Its light phase remains duration-driven if still active. */
     public boolean finishPeriodicFreezeAndStartPostThrottle() {
         synchronized (lock) {
-            clearLightFieldsLocked();
             return startPostThrottleLocked(false,
                     MIN_START_DELAY_MS, MAX_START_DELAY_MS,
                     MIN_DURATION_MS, MAX_DURATION_MS);
@@ -272,7 +260,7 @@ public final class GlobalRobotOutboundThrottle {
     }
 
     public boolean startFromRobotWhiteReturn() { return false; }
-    public void cancelActiveCycle() { synchronized (lock) { clearCycleLocked(); } }
+    public void cancelActiveCycle() { synchronized (lock) { clearAllLocked(); } }
 
     public PacketDecision decide(PacketEnvelope packet) {
         if (packet.direction() != PacketDirection.OUTBOUND || !isIpv4Udp(packet)) return PacketDecision.PASS;
@@ -282,26 +270,15 @@ public final class GlobalRobotOutboundThrottle {
         final long generation;
         final long delayNanos;
         synchronized (lock) {
-            if (!featureEnabled || sink == null || phase == Phase.NONE) return PacketDecision.PASS;
+            if (!featureEnabled || sink == null) return PacketDecision.PASS;
+            long now = System.nanoTime();
+            expireTimedPhasesLocked(now);
+            if (!lightActive && !postActive) return PacketDecision.PASS;
 
-            // Preserve the existing safety-timeout behavior. If visual hold really ended before the
-            // white-return callback, the light phase transitions to the visual post profile.
-            if (phase == Phase.LIGHT && lightOwner == LightOwner.VISUAL
-                    && !GreatEngine.instance().freezeCore().holdTriggerActive()) {
-                if (!startPostThrottleLocked(true,
-                        visualPostStartMinMs, visualPostStartMaxMs,
-                        visualPostDurationMinMs, visualPostDurationMaxMs)) {
-                    return PacketDecision.PASS;
-                }
-            }
-
-            if (phase == Phase.LIGHT) {
-                delayNanos = nextLightDelayLocked(System.nanoTime());
-            } else {
-                long now = System.nanoTime();
-                if (now >= cycleEndsNanos) { clearCycleLocked(); return PacketDecision.PASS; }
-                delayNanos = nextPostFreezeDelayLocked(now);
-            }
+            long lightDelay = lightActive ? nextLightDelayLocked(now) : 0L;
+            long postDelay = postActive ? nextPostFreezeDelayLocked(now) : 0L;
+            // If both phases overlap, one packet is scheduled once using the stronger delay.
+            delayNanos = Math.max(lightDelay, postDelay);
             if (delayNanos <= 0L) return PacketDecision.PASS;
             output = sink;
             generation = transportGeneration;
@@ -309,16 +286,17 @@ public final class GlobalRobotOutboundThrottle {
 
         byte[] copy = new byte[packet.length()];
         System.arraycopy(packet.data(), 0, copy, 0, copy.length);
-        PacketEnvelope held = new PacketEnvelope(copy, copy.length, PacketDirection.OUTBOUND, packet.monotonicNanos());
+        PacketEnvelope held = new PacketEnvelope(copy, copy.length,
+                PacketDirection.OUTBOUND, packet.monotonicNanos());
         delayed.incrementAndGet();
         scheduler.schedule(() -> emitIfCurrent(output, held, generation), delayNanos, TimeUnit.NANOSECONDS);
         return PacketDecision.HOLD;
     }
 
     private long nextLightDelayLocked(long now) {
-        if (phase != Phase.LIGHT || lightStartDelayNanos <= 0L) return 0L;
+        if (!lightActive || lightStartDelayNanos <= 0L) return 0L;
 
-        if (lightUsesWhiteReturnLocked()) {
+        if (lightWhiteLinkedForCycle) {
             if (lightFirstDecision) {
                 lightFirstDecision = false;
                 return lightPreviousDelayNanos;
@@ -331,9 +309,10 @@ public final class GlobalRobotOutboundThrottle {
 
         long remaining = lightEndsNanos - now;
         if (remaining <= 0L || lightDurationNanos <= 0L) {
-            clearCycleLocked();
+            clearLightLocked();
             return 0L;
         }
+
         if (lightFirstDecision) {
             lightFirstDecision = false;
             long ceiling = Math.max(1L, (lightStartDelayNanos * remaining) / lightDurationNanos);
@@ -344,44 +323,56 @@ public final class GlobalRobotOutboundThrottle {
         int decayPercent = randomInclusiveLocked(MIN_LIGHT_DECAY_PERCENT, MAX_LIGHT_DECAY_PERCENT);
         long percentageStep = (lightPreviousDelayNanos * (100L - decayPercent)) / 100L;
         long timeCeiling = Math.max(1L, (lightStartDelayNanos * remaining) / lightDurationNanos);
-        long next = Math.min(percentageStep, timeCeiling);
-        lightPreviousDelayNanos = Math.max(1L, next);
+        lightPreviousDelayNanos = Math.max(1L, Math.min(percentageStep, timeCeiling));
         return lightPreviousDelayNanos;
-    }
-
-    private boolean lightUsesWhiteReturnLocked() {
-        return phase == Phase.LIGHT && lightOwner == LightOwner.VISUAL && lightStopOnWhiteReturn;
     }
 
     private boolean startPostThrottleLocked(boolean visual,
                                             int startMinMs, int startMaxMs,
                                             int durationMinMs, int durationMaxMs) {
-        if (!featureEnabled || sink == null) { clearCycleLocked(); return false; }
-        clearLightFieldsLocked();
-        if (visual && !visualPostEnabled) { clearCycleLocked(); return false; }
-        if (rng.nextInt(100) < POST_FREEZE_SKIP_PERCENT) { clearCycleLocked(); return false; }
+        clearPostLocked();
+        if (!featureEnabled || sink == null) return false;
+        if (visual && !visualPostEnabled) return false;
+        if (rng.nextInt(100) < POST_FREEZE_SKIP_PERCENT) return false;
+
         int startDelayMs = randomInclusiveLocked(startMinMs, startMaxMs);
         int durationMs = randomInclusiveLocked(durationMinMs, durationMaxMs);
         long now = System.nanoTime();
-        phase = Phase.POST_FREEZE;
-        cycleDurationNanos = TimeUnit.MILLISECONDS.toNanos(durationMs);
-        cycleEndsNanos = now + cycleDurationNanos;
-        startDelayNanos = TimeUnit.MILLISECONDS.toNanos(startDelayMs);
-        previousDelayNanos = startDelayNanos + 1L;
+        postActive = true;
+        postDurationNanos = TimeUnit.MILLISECONDS.toNanos(durationMs);
+        postEndsNanos = now + postDurationNanos;
+        postStartDelayNanos = TimeUnit.MILLISECONDS.toNanos(startDelayMs);
+        postPreviousDelayNanos = postStartDelayNanos + 1L;
         return true;
     }
 
     private long nextPostFreezeDelayLocked(long now) {
-        long remaining = cycleEndsNanos - now;
-        if (remaining <= 0L || cycleDurationNanos <= 0L || startDelayNanos <= 0L) { clearCycleLocked(); return 0L; }
-        long ceiling = Math.max(1L, (startDelayNanos * remaining) / cycleDurationNanos);
-        long maxAllowed = Math.min(ceiling, previousDelayNanos - 1L);
-        if (maxAllowed <= 0L) return 0L;
+        if (!postActive) return 0L;
+        long remaining = postEndsNanos - now;
+        if (remaining <= 0L || postDurationNanos <= 0L || postStartDelayNanos <= 0L) {
+            clearPostLocked();
+            return 0L;
+        }
+        long ceiling = Math.max(1L, (postStartDelayNanos * remaining) / postDurationNanos);
+        long maxAllowed = Math.min(ceiling, postPreviousDelayNanos - 1L);
+        if (maxAllowed <= 0L) {
+            clearPostLocked();
+            return 0L;
+        }
         long floor = Math.max(1L, maxAllowed - TimeUnit.MILLISECONDS.toNanos(12));
         long span = maxAllowed - floor;
         long chosen = span <= 0L ? maxAllowed : floor + nextLongBoundedLocked(span + 1L);
-        previousDelayNanos = chosen;
+        postPreviousDelayNanos = chosen;
         return chosen;
+    }
+
+    private void expireTimedPhasesLocked(long now) {
+        if (lightActive && !lightWhiteLinkedForCycle && lightEndsNanos > 0L && now >= lightEndsNanos) {
+            clearLightLocked();
+        }
+        if (postActive && postEndsNanos > 0L && now >= postEndsNanos) {
+            clearPostLocked();
+        }
     }
 
     private void emitIfCurrent(OutputSink output, PacketEnvelope packet, long generation) {
@@ -389,27 +380,34 @@ public final class GlobalRobotOutboundThrottle {
         try { output.emit(packet); } catch (Exception ignored) { }
     }
 
-    private void clearCycleLocked() {
-        phase = Phase.NONE;
-        clearLightFieldsLocked();
-        clearPostFreezeFieldsLocked();
+    private void clearAllLocked() {
+        clearLightLocked();
+        clearPostLocked();
     }
 
-    private void clearLightFieldsLocked() {
+    private void clearLightLocked() {
+        lightActive = false;
         lightOwner = LightOwner.NONE;
-        lightStartedNanos = 0L;
+        lightWhiteLinkedForCycle = false;
         lightEndsNanos = 0L;
         lightDurationNanos = 0L;
         lightStartDelayNanos = 0L;
         lightPreviousDelayNanos = 0L;
         lightFirstDecision = false;
-        if (phase == Phase.LIGHT) phase = Phase.NONE;
     }
 
-    private void clearPostFreezeFieldsLocked() {
-        cycleEndsNanos = cycleDurationNanos = startDelayNanos = previousDelayNanos = 0L;
+    private void clearPostLocked() {
+        postActive = false;
+        postEndsNanos = 0L;
+        postDurationNanos = 0L;
+        postStartDelayNanos = 0L;
+        postPreviousDelayNanos = 0L;
     }
-    private int randomInclusiveLocked(int from, int to) { return from == to ? from : from + rng.nextInt(to - from + 1); }
+
+    private int randomInclusiveLocked(int from, int to) {
+        return from == to ? from : from + rng.nextInt(to - from + 1);
+    }
+
     private long nextLongBoundedLocked(long bound) {
         if (bound <= 1L) return 0L;
         return (rng.nextLong() & Long.MAX_VALUE) % bound;
