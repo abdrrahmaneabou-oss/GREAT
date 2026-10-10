@@ -8,6 +8,7 @@ import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.*;
 
@@ -122,6 +123,37 @@ public final class FreezeCoreTest {
             int released = emitted.size();
             assertTrue("release count=" + released, released >= 13 && released <= 17);
             assertEquals(0, h.core.freezeQueueSize());
+        }
+    }
+
+    @Test public void completedCycleReportsExactObservedCounts() throws Exception {
+        try (Harness h = new Harness()) {
+            AtomicReference<FreezeCore.CycleStats> recorded = new AtomicReference<>();
+            CountDownLatch completed = new CountDownLatch(1);
+            h.core.setCycleListener(stats -> {
+                recorded.set(stats);
+                completed.countDown();
+            });
+            h.core.attach(p -> { });
+            h.enableAndSettleRamp();
+
+            assertEquals(PacketDecision.PASS,
+                    h.decide(TestPackets.udp(PacketDirection.INBOUND, 7000, 100, 99)));
+            for (int i = 0; i < 20; i++) {
+                assertEquals(PacketDecision.HOLD,
+                        h.decide(TestPackets.udp(PacketDirection.INBOUND, 443, 100, i)));
+            }
+            h.state.set(Capability.FREEZE, false);
+
+            assertTrue(completed.await(5, TimeUnit.SECONDS));
+            FreezeCore.CycleStats stats = recorded.get();
+            assertNotNull(stats);
+            assertEquals("MANUAL", stats.source());
+            assertEquals(21, stats.arrived());
+            assertEquals(20, stats.frozen());
+            assertTrue(stats.dropped() >= 3 && stats.dropped() <= 7);
+            assertEquals(20 - stats.dropped(), stats.released());
+            assertEquals(0, stats.evicted());
         }
     }
 
