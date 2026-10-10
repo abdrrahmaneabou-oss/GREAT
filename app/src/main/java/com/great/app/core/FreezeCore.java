@@ -26,6 +26,8 @@ public final class FreezeCore implements AutoCloseable {
     public static final int DEFAULT_RANDOM_PAYLOAD_MIN_TO = 29;
     public static final int DEFAULT_RANDOM_PAYLOAD_MAX_FROM = 450;
     public static final int DEFAULT_RANDOM_PAYLOAD_MAX_TO = 499;
+    public static final int OUTBOUND_THROTTLE_WINDOW_MS = 300;
+    public static final int OUTBOUND_THROTTLE_MAX_DELAY_MS = 100;
 
     private static final int MIN_RELEASE_BURST = 1;
     private static final int MAX_RELEASE_BURST = 4;
@@ -41,12 +43,19 @@ public final class FreezeCore implements AutoCloseable {
     private static final int MIN_RAMP_STAGE2_HOLD_PERCENT = 55;
     private static final int MAX_RAMP_STAGE2_HOLD_PERCENT = 75;
 
+    private static final long OUTBOUND_THROTTLE_WINDOW_NANOS =
+            TimeUnit.MILLISECONDS.toNanos(OUTBOUND_THROTTLE_WINDOW_MS);
+    private static final long OUTBOUND_THROTTLE_MAX_DELAY_NANOS =
+            TimeUnit.MILLISECONDS.toNanos(OUTBOUND_THROTTLE_MAX_DELAY_MS);
+    private static final long OUTBOUND_RANDOM_STEP_MAX_NANOS = TimeUnit.MICROSECONDS.toNanos(50);
+
     private final CapabilityController controller;
     private final EngineDiagnostics diagnostics;
     private final Random rng;
     private final Object lock = new Object();
     private final ArrayDeque<PacketEnvelope> buffer = new ArrayDeque<>();
     private final ScheduledExecutorService timers = Executors.newSingleThreadScheduledExecutor(r -> daemon(r, "GREAT-Freeze-Timer"));
+    private final ScheduledExecutorService outboundDelays = Executors.newSingleThreadScheduledExecutor(r -> daemon(r, "GREAT-Outbound-Throttle"));
     private final ExecutorService releases = Executors.newSingleThreadExecutor(r -> daemon(r, "GREAT-Freeze-Release"));
     private OutputSink sink;
     private ScheduledFuture<?> timeout;
@@ -63,6 +72,12 @@ public final class FreezeCore implements AutoCloseable {
     private int randomPayloadMinTo = DEFAULT_RANDOM_PAYLOAD_MIN_TO;
     private int randomPayloadMaxFrom = DEFAULT_RANDOM_PAYLOAD_MAX_FROM;
     private int randomPayloadMaxTo = DEFAULT_RANDOM_PAYLOAD_MAX_TO;
+
+    // Optional outbound delay window that begins exactly when an inbound Freeze release begins.
+    private boolean outboundThrottleEnabled;
+    private long outboundThrottleStartedNanos;
+    private long outboundThrottleEndsNanos;
+    private long outboundThrottlePreviousDelayNanos;
 
     // Manual Freeze is controlled only by CapabilityController / the visible Freeze button.
     private boolean manualEnabled;
@@ -92,6 +107,24 @@ public final class FreezeCore implements AutoCloseable {
     public PacketDecision decide(PacketContext context, EngineSnapshot state) {
         PacketMetadata m = context.metadata();
         PacketEnvelope packet = context.packet();
+
+        if (packet.direction() == PacketDirection.OUTBOUND) {
+            synchronized (lock) {
+                if (closed || !outboundThrottleEnabled) return PacketDecision.PASS;
+                long delayNanos = nextOutboundThrottleDelayLocked(System.nanoTime());
+                if (delayNanos <= 0L) return PacketDecision.PASS;
+                byte[] copy = new byte[packet.length()];
+                System.arraycopy(packet.data(), 0, copy, 0, copy.length);
+                PacketEnvelope delayed = new PacketEnvelope(
+                        copy, copy.length, PacketDirection.OUTBOUND, packet.monotonicNanos());
+                long session = generation;
+                diagnostics.scheduled();
+                outboundDelays.schedule(() -> emitDelayedOutbound(delayed, session),
+                        delayNanos, TimeUnit.NANOSECONDS);
+                return PacketDecision.HOLD;
+            }
+        }
+
         if (packet.direction() != PacketDirection.INBOUND || !m.valid() || m.ipVersion() != 4
                 || m.protocol() != PacketParser.PROTO_UDP || m.fragmented()) return PacketDecision.PASS;
         int offset = m.transportOffset();
@@ -163,6 +196,28 @@ public final class FreezeCore implements AutoCloseable {
 
     public int payloadMin() { synchronized (lock) { return payloadMin; } }
     public int payloadMax() { synchronized (lock) { return payloadMax; } }
+
+    public void setOutboundThrottleEnabled(boolean enabled) {
+        synchronized (lock) {
+            outboundThrottleEnabled = enabled;
+            if (!enabled) clearOutboundThrottleLocked();
+        }
+    }
+
+    public boolean outboundThrottleEnabled() {
+        synchronized (lock) { return outboundThrottleEnabled; }
+    }
+
+    public boolean outboundThrottleActive() {
+        synchronized (lock) {
+            if (!outboundThrottleEnabled || outboundThrottleEndsNanos <= 0L) return false;
+            if (System.nanoTime() >= outboundThrottleEndsNanos) {
+                clearOutboundThrottleLocked();
+                return false;
+            }
+            return true;
+        }
+    }
 
     public void onCapabilityChanged(Capability capability, boolean value) {
         if (capability != Capability.FREEZE) return;
@@ -276,11 +331,71 @@ public final class FreezeCore implements AutoCloseable {
         return rng.nextInt(100) < holdPercent;
     }
 
+    private void startOutboundThrottleLocked() {
+        if (!outboundThrottleEnabled) {
+            clearOutboundThrottleLocked();
+            return;
+        }
+        long now = System.nanoTime();
+        outboundThrottleStartedNanos = now;
+        outboundThrottleEndsNanos = now + OUTBOUND_THROTTLE_WINDOW_NANOS;
+        outboundThrottlePreviousDelayNanos = OUTBOUND_THROTTLE_MAX_DELAY_NANOS + 1L;
+    }
+
+    private void clearOutboundThrottleLocked() {
+        outboundThrottleStartedNanos = 0L;
+        outboundThrottleEndsNanos = 0L;
+        outboundThrottlePreviousDelayNanos = 0L;
+    }
+
+    /**
+     * Produces a strictly decreasing random delay for every outbound packet in one release window.
+     * A time envelope guarantees the delay reaches zero by 300 ms, while the random downward step
+     * prevents a fixed, mechanically linear sequence between packets.
+     */
+    private long nextOutboundThrottleDelayLocked(long nowNanos) {
+        if (outboundThrottleStartedNanos <= 0L || outboundThrottleEndsNanos <= 0L
+                || nowNanos >= outboundThrottleEndsNanos) {
+            clearOutboundThrottleLocked();
+            return 0L;
+        }
+
+        long remaining = outboundThrottleEndsNanos - nowNanos;
+        long timeCeiling = (OUTBOUND_THROTTLE_MAX_DELAY_NANOS * remaining)
+                / OUTBOUND_THROTTLE_WINDOW_NANOS;
+        long strictCeiling = Math.min(timeCeiling, outboundThrottlePreviousDelayNanos - 1L);
+        if (strictCeiling <= 0L) {
+            outboundThrottlePreviousDelayNanos = 0L;
+            return 0L;
+        }
+
+        long maxRandomStep = Math.min(OUTBOUND_RANDOM_STEP_MAX_NANOS, strictCeiling);
+        long randomStep = 1L + (long) (rng.nextDouble() * maxRandomStep);
+        long next = Math.max(1L, strictCeiling - randomStep + 1L);
+        outboundThrottlePreviousDelayNanos = next;
+        return next;
+    }
+
+    private void emitDelayedOutbound(PacketEnvelope packet, long session) {
+        OutputSink output;
+        synchronized (lock) {
+            if (closed || session != generation || sink == null) return;
+            output = sink;
+        }
+        try {
+            output.emit(packet);
+            diagnostics.released();
+        } catch (Exception ignored) {
+            // The live transport owns fail-closed behavior. A delayed packet is never retried here.
+        }
+    }
+
     private void releaseBufferedLocked() {
         if (buffer.isEmpty()) return;
         ArrayList<PacketEnvelope> all = new ArrayList<>(buffer);
         buffer.clear();
         long session = generation;
+        startOutboundThrottleLocked();
         releases.execute(() -> release(all, session));
     }
 
@@ -353,6 +468,7 @@ public final class FreezeCore implements AutoCloseable {
             manualEnabled = false;
             visualMonitorHold = false;
             clearRampLocked();
+            clearOutboundThrottleLocked();
             generation++;
             if (timeout != null) timeout.cancel(false);
             timeout = null;
@@ -367,6 +483,7 @@ public final class FreezeCore implements AutoCloseable {
     @Override public void close() {
         synchronized (lock) { reset(); closed = true; sink = null; }
         timers.shutdownNow();
+        outboundDelays.shutdownNow();
         releases.shutdownNow();
     }
 
