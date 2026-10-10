@@ -86,6 +86,8 @@ public final class GreatMainActivity extends Activity {
         projectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         applySavedPayloadSettings();
         GreatEngine.instance().freezeCore().setFreezeDurationSeconds(capabilitySettings.freezeSeconds());
+        GreatEngine.instance().freezeCore().setOutboundThrottleEnabled(
+                capabilitySettings.outboundReleaseThrottleEnabled());
         setContentView(buildContent());
         refreshConfig();
         handleAction(getIntent());
@@ -141,6 +143,7 @@ public final class GreatMainActivity extends Activity {
         add(root, vpnCard(), 14);
         add(root, targetCard(), 14);
         add(root, packetRangeCard(), 14);
+        add(root, outboundThrottleCard(), 14);
         add(root, robotTimeoutCard(), 14);
         add(root, showCirclesCard(), 14);
         add(root, hideCirclesCard(), 14);
@@ -223,6 +226,30 @@ public final class GreatMainActivity extends Activity {
         TextView save = button("SAVE", true);
         save.setOnClickListener(v -> savePayloadRange());
         add(card, save, 14);
+        return card;
+    }
+
+    private View outboundThrottleCard() {
+        LinearLayout card = card();
+        add(card, text("OUTBOUND RELEASE THROTTLE", 11, ACCENT, true), 0);
+        add(card, text(
+                "For 300 ms after Freeze release begins, selected-app OUTBOUND packets are delayed. Delay starts near 100 ms, then falls randomly and strictly until it disappears.",
+                12, MUTED, false), 8);
+
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        TextView label = text("ENABLE THROTTLE", 13, TEXT, true);
+        row.addView(label, new LinearLayout.LayoutParams(0, -2, 1f));
+        Switch toggle = new Switch(this);
+        toggle.setChecked(capabilitySettings.outboundReleaseThrottleEnabled());
+        toggle.setOnCheckedChangeListener((buttonView, enabled) -> {
+            capabilitySettings.setOutboundReleaseThrottleEnabled(enabled);
+            GreatEngine.instance().freezeCore().setOutboundThrottleEnabled(enabled);
+            toast(enabled ? "Outbound release throttle enabled" : "Outbound release throttle disabled");
+        });
+        row.addView(toggle, new LinearLayout.LayoutParams(-2, -2));
+        add(card, row, 14);
         return card;
     }
 
