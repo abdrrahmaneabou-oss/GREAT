@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <application
+        android:name=".ui.ArabicCardTitlesApplication"
         android:allowBackup="false"
         android:label="GREAT"
         android:theme="@style/Theme.Great"
