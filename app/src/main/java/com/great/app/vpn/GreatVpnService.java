@@ -18,6 +18,7 @@ import android.os.IBinder;
 import com.great.app.config.AwgConfig;
 import com.great.app.config.AwgConfigParser;
 import com.great.app.config.CapabilitySettingsStore;
+import com.great.app.config.FreezeHistoryStore;
 import com.great.app.config.SecureConfigStore;
 import com.great.app.core.GreatEngine;
 import com.great.app.transport.AwgTransport;
@@ -31,6 +32,7 @@ public final class GreatVpnService extends VpnService {
     public static final String ACTION_STOP = "com.great.app.action.STOP";
     private TunnelTransport transport;
     private TargetAppsStore targets;
+    private FreezeHistoryStore freezeHistory;
     private final SharedPreferences.OnSharedPreferenceChangeListener targetChanges = (prefs, key) -> {
         if (TargetAppsStore.KEY.equals(key) && transport != null) refreshTargets();
     };
@@ -43,6 +45,7 @@ public final class GreatVpnService extends VpnService {
     @Override public void onCreate() {
         super.onCreate();
         targets = new TargetAppsStore(this);
+        freezeHistory = new FreezeHistoryStore(this);
         targets.register(targetChanges);
         IntentFilter filter = new IntentFilter();
         filter.addAction(Intent.ACTION_PACKAGE_ADDED);
@@ -82,6 +85,7 @@ public final class GreatVpnService extends VpnService {
         try {
             GreatEngine engine = GreatEngine.instance();
             engine.reset();
+            engine.freezeCore().setCycleListener(freezeHistory::append);
 
             CapabilitySettingsStore tuning = new CapabilitySettingsStore(this);
             engine.freezeCore().setFreezeDurationSeconds(tuning.freezeSeconds());
