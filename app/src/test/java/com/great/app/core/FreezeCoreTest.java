@@ -65,21 +65,23 @@ public final class FreezeCoreTest {
         }
     }
 
-    @Test public void strictConfiguredSizeThresholds() {
+    @Test public void inclusiveConfiguredSizeThresholdsAndExpandedLimits() {
         CapabilityController state = new CapabilityController();
         try (FreezeCore core = new FreezeCore(state, new EngineDiagnostics(), new Random(1))) {
-            assertFalse(core.shouldHold(20));
-            assertTrue(core.shouldHold(21));
-            assertTrue(core.shouldHold(499));
-            assertFalse(core.shouldHold(500));
+            assertTrue(core.shouldHold(20));
+            assertTrue(core.shouldHold(500));
 
             core.setPayloadRange(35, 75);
-            assertFalse(core.shouldHold(35));
-            assertTrue(core.shouldHold(36));
-            assertTrue(core.shouldHold(74));
-            assertFalse(core.shouldHold(75));
+            assertFalse(core.shouldHold(34));
+            assertTrue(core.shouldHold(35));
+            assertTrue(core.shouldHold(75));
+            assertFalse(core.shouldHold(76));
             assertEquals(35, core.payloadMin());
             assertEquals(75, core.payloadMax());
+
+            core.setPayloadRange(1, 600);
+            assertTrue(core.shouldHold(1));
+            assertTrue(core.shouldHold(600));
         }
     }
 
