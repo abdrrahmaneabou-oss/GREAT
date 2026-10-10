@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 import com.great.app.core.FreezeCore;
+import com.great.app.transport.GlobalRobotOutboundThrottle;
 
 /** Persistent user tuning for GREAT capability limits and packet filtering. */
 public final class CapabilitySettingsStore {
@@ -17,6 +18,10 @@ public final class CapabilitySettingsStore {
     private static final String FREEZE_PAYLOAD_MAX_FROM = "freeze_payload_max_from";
     private static final String FREEZE_PAYLOAD_MAX_TO = "freeze_payload_max_to";
     private static final String OUTBOUND_RELEASE_THROTTLE_ENABLED = "outbound_release_throttle_enabled";
+    private static final String ROBOT_WHITE_RETURN_START_MIN_MS = "robot_white_return_start_min_ms";
+    private static final String ROBOT_WHITE_RETURN_START_MAX_MS = "robot_white_return_start_max_ms";
+    private static final String ROBOT_WHITE_RETURN_DURATION_MIN_MS = "robot_white_return_duration_min_ms";
+    private static final String ROBOT_WHITE_RETURN_DURATION_MAX_MS = "robot_white_return_duration_max_ms";
 
     private final SharedPreferences prefs;
 
@@ -84,12 +89,52 @@ public final class CapabilitySettingsStore {
                 .apply();
     }
 
+    /** This switch controls only Robot post-Freeze throttle after the visual white-return cycle. */
     public boolean outboundReleaseThrottleEnabled() {
         return prefs.getBoolean(OUTBOUND_RELEASE_THROTTLE_ENABLED, true);
     }
 
     public void setOutboundReleaseThrottleEnabled(boolean enabled) {
         prefs.edit().putBoolean(OUTBOUND_RELEASE_THROTTLE_ENABLED, enabled).apply();
+    }
+
+    public int robotWhiteReturnStartMinMs() { return robotWhiteReturnRange()[0]; }
+    public int robotWhiteReturnStartMaxMs() { return robotWhiteReturnRange()[1]; }
+    public int robotWhiteReturnDurationMinMs() { return robotWhiteReturnRange()[2]; }
+    public int robotWhiteReturnDurationMaxMs() { return robotWhiteReturnRange()[3]; }
+
+    public void setRobotWhiteReturnThrottleRange(int startMinMs, int startMaxMs,
+                                                  int durationMinMs, int durationMaxMs) {
+        if (!GlobalRobotOutboundThrottle.validVisualPostRange(
+                startMinMs, startMaxMs, durationMinMs, durationMaxMs)) {
+            throw new IllegalArgumentException("Throttle ranges must be ordered and stay inside 1..5000 ms");
+        }
+        prefs.edit()
+                .putInt(ROBOT_WHITE_RETURN_START_MIN_MS, startMinMs)
+                .putInt(ROBOT_WHITE_RETURN_START_MAX_MS, startMaxMs)
+                .putInt(ROBOT_WHITE_RETURN_DURATION_MIN_MS, durationMinMs)
+                .putInt(ROBOT_WHITE_RETURN_DURATION_MAX_MS, durationMaxMs)
+                .apply();
+    }
+
+    private int[] robotWhiteReturnRange() {
+        int startMin = prefs.getInt(ROBOT_WHITE_RETURN_START_MIN_MS,
+                GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_START_MIN_MS);
+        int startMax = prefs.getInt(ROBOT_WHITE_RETURN_START_MAX_MS,
+                GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_START_MAX_MS);
+        int durationMin = prefs.getInt(ROBOT_WHITE_RETURN_DURATION_MIN_MS,
+                GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_DURATION_MIN_MS);
+        int durationMax = prefs.getInt(ROBOT_WHITE_RETURN_DURATION_MAX_MS,
+                GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_DURATION_MAX_MS);
+        if (!GlobalRobotOutboundThrottle.validVisualPostRange(startMin, startMax, durationMin, durationMax)) {
+            return new int[]{
+                    GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_START_MIN_MS,
+                    GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_START_MAX_MS,
+                    GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_DURATION_MIN_MS,
+                    GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_DURATION_MAX_MS
+            };
+        }
+        return new int[]{startMin, startMax, durationMin, durationMax};
     }
 
     private int[] randomPayloadRange() {
