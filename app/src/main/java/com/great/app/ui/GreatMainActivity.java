@@ -34,6 +34,7 @@ import com.great.app.core.Capability;
 import com.great.app.core.FreezeCore;
 import com.great.app.core.GreatEngine;
 import com.great.app.core.TargetPackages;
+import com.great.app.transport.GlobalRobotOutboundThrottle;
 import com.great.app.vpn.GreatVpnService;
 
 import java.io.ByteArrayOutputStream;
@@ -77,6 +78,10 @@ public final class GreatMainActivity extends Activity {
     private EditText payloadMinToInput;
     private EditText payloadMaxFromInput;
     private EditText payloadMaxToInput;
+    private EditText postThrottleStartMinInput;
+    private EditText postThrottleStartMaxInput;
+    private EditText postThrottleDurationMinInput;
+    private EditText postThrottleDurationMaxInput;
     private LinearLayout payloadFixedInputs;
     private LinearLayout payloadRandomInputs;
     private Switch payloadRandomSwitch;
@@ -95,8 +100,8 @@ public final class GreatMainActivity extends Activity {
         projectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         applySavedPayloadSettings();
         GreatEngine.instance().freezeCore().setFreezeDurationSeconds(capabilitySettings.freezeSeconds());
-        GreatEngine.instance().freezeCore().setOutboundThrottleEnabled(
-                capabilitySettings.outboundReleaseThrottleEnabled());
+        GreatEngine.instance().freezeCore().setOutboundThrottleEnabled(false);
+        applySavedVisualPostThrottleSettings();
         setContentView(buildContent());
         refreshConfig();
         handleAction(getIntent());
@@ -109,6 +114,14 @@ public final class GreatMainActivity extends Activity {
                 capabilitySettings.freezePayloadMinFrom(), capabilitySettings.freezePayloadMinTo(),
                 capabilitySettings.freezePayloadMaxFrom(), capabilitySettings.freezePayloadMaxTo());
         core.setRandomPayloadRangeEnabled(capabilitySettings.freezePayloadRandomEnabled());
+    }
+
+    private void applySavedVisualPostThrottleSettings() {
+        GlobalRobotOutboundThrottle throttle = GlobalRobotOutboundThrottle.instance();
+        throttle.setVisualPostEnabled(capabilitySettings.outboundReleaseThrottleEnabled());
+        throttle.setVisualPostRange(
+                capabilitySettings.robotWhiteReturnStartMinMs(), capabilitySettings.robotWhiteReturnStartMaxMs(),
+                capabilitySettings.robotWhiteReturnDurationMinMs(), capabilitySettings.robotWhiteReturnDurationMaxMs());
     }
 
     @Override protected void onNewIntent(Intent intent) {
@@ -244,26 +257,69 @@ public final class GreatMainActivity extends Activity {
 
     private View outboundThrottleCard() {
         LinearLayout card = card();
-        add(card, text("OUTBOUND RELEASE THROTTLE", 11, ACCENT, true), 0);
+        add(card, text("ROBOT WHITE-RETURN OUTBOUND THROTTLE", 11, ACCENT, true), 0);
         add(card, text(
-                "For 300 ms after Freeze release begins, selected-app OUTBOUND packets are delayed. Delay starts near 100 ms, then falls randomly and strictly until it disappears.",
+                "Only after a visual Robot Freeze ends on white return: Global OUTBOUND IPv4/UDP gets a 30% skip chance, then one random initial delay and one random duration from the saved ranges. Delay falls irregularly to zero. This card does not change the 30–60 ms light throttle during Freeze or the periodic Robot throttle.",
                 12, MUTED, false), 8);
 
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        TextView label = text("ENABLE THROTTLE", 13, TEXT, true);
+        TextView label = text("ENABLE WHITE-RETURN THROTTLE", 13, TEXT, true);
         row.addView(label, new LinearLayout.LayoutParams(0, -2, 1f));
         Switch toggle = new Switch(this);
         toggle.setChecked(capabilitySettings.outboundReleaseThrottleEnabled());
         toggle.setOnCheckedChangeListener((buttonView, enabled) -> {
             capabilitySettings.setOutboundReleaseThrottleEnabled(enabled);
-            GreatEngine.instance().freezeCore().setOutboundThrottleEnabled(enabled);
-            toast(enabled ? "Outbound release throttle enabled" : "Outbound release throttle disabled");
+            GlobalRobotOutboundThrottle.instance().setVisualPostEnabled(enabled);
+            toast(enabled ? "White-return throttle enabled" : "White-return throttle disabled");
         });
         row.addView(toggle, new LinearLayout.LayoutParams(-2, -2));
         add(card, row, 14);
+
+        add(card, text("INITIAL DELAY RANGE • ms", 11, ACCENT, true), 16);
+        LinearLayout startRow = inputRow();
+        postThrottleStartMinInput = numericInput("Min Start", capabilitySettings.robotWhiteReturnStartMinMs());
+        postThrottleStartMaxInput = numericInput("Max Start", capabilitySettings.robotWhiteReturnStartMaxMs());
+        addTwoInputs(startRow, postThrottleStartMinInput, postThrottleStartMaxInput);
+        add(card, startRow, 8);
+
+        add(card, text("THROTTLE DURATION RANGE • ms", 11, ACCENT, true), 16);
+        LinearLayout durationRow = inputRow();
+        postThrottleDurationMinInput = numericInput("Min Duration", capabilitySettings.robotWhiteReturnDurationMinMs());
+        postThrottleDurationMaxInput = numericInput("Max Duration", capabilitySettings.robotWhiteReturnDurationMaxMs());
+        addTwoInputs(durationRow, postThrottleDurationMinInput, postThrottleDurationMaxInput);
+        add(card, durationRow, 8);
+
+        add(card, text("Each visual white-return cycle independently picks one value from each range. Allowed: 1–5000 ms, minimum ≤ maximum.",
+                11, MUTED, false), 8);
+        TextView save = button("SAVE THROTTLE RANGES", true);
+        save.setOnClickListener(v -> saveVisualPostThrottleRanges());
+        add(card, save, 14);
         return card;
+    }
+
+    private void saveVisualPostThrottleRanges() {
+        if (postThrottleStartMinInput == null || postThrottleStartMaxInput == null
+                || postThrottleDurationMinInput == null || postThrottleDurationMaxInput == null) return;
+        Integer startMin = parseRequired(postThrottleStartMinInput, "Minimum start delay is required");
+        Integer startMax = parseRequired(postThrottleStartMaxInput, "Maximum start delay is required");
+        Integer durationMin = parseRequired(postThrottleDurationMinInput, "Minimum duration is required");
+        Integer durationMax = parseRequired(postThrottleDurationMaxInput, "Maximum duration is required");
+        if (startMin == null || startMax == null || durationMin == null || durationMax == null) return;
+
+        int low = GlobalRobotOutboundThrottle.MIN_CONFIGURABLE_POST_MS;
+        int high = GlobalRobotOutboundThrottle.MAX_CONFIGURABLE_POST_MS;
+        if (startMin < low || startMin > high) { postThrottleStartMinInput.setError("Must be 1..5000 ms"); return; }
+        if (startMax < low || startMax > high) { postThrottleStartMaxInput.setError("Must be 1..5000 ms"); return; }
+        if (durationMin < low || durationMin > high) { postThrottleDurationMinInput.setError("Must be 1..5000 ms"); return; }
+        if (durationMax < low || durationMax > high) { postThrottleDurationMaxInput.setError("Must be 1..5000 ms"); return; }
+        if (startMin > startMax) { postThrottleStartMinInput.setError("Minimum must be ≤ maximum"); return; }
+        if (durationMin > durationMax) { postThrottleDurationMinInput.setError("Minimum must be ≤ maximum"); return; }
+
+        capabilitySettings.setRobotWhiteReturnThrottleRange(startMin, startMax, durationMin, durationMax);
+        GlobalRobotOutboundThrottle.instance().setVisualPostRange(startMin, startMax, durationMin, durationMax);
+        toast("White-return throttle ranges saved");
     }
 
     private View freezeHistoryCard() {
