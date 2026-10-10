@@ -1,0 +1,63 @@
+package com.great.app.ui;
+
+import android.app.Activity;
+import android.app.Application;
+import android.os.Bundle;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
+import android.widget.TextView;
+
+/** Keeps only the main control-card headings in Arabic while leaving card contents unchanged. */
+public final class ArabicCardTitlesApplication extends Application {
+    @Override public void onCreate() {
+        super.onCreate();
+        registerActivityLifecycleCallbacks(new ActivityLifecycleCallbacks() {
+            @Override public void onActivityResumed(Activity activity) {
+                if (!(activity instanceof GreatMainActivity)) return;
+                View root = activity.getWindow().getDecorView();
+                translateTree(root);
+                root.getViewTreeObserver().addOnGlobalLayoutListener(
+                        () -> translateTree(root));
+            }
+
+            @Override public void onActivityCreated(Activity activity, Bundle state) { }
+            @Override public void onActivityStarted(Activity activity) { }
+            @Override public void onActivityPaused(Activity activity) { }
+            @Override public void onActivityStopped(Activity activity) { }
+            @Override public void onActivitySaveInstanceState(Activity activity, Bundle state) { }
+            @Override public void onActivityDestroyed(Activity activity) { }
+        });
+    }
+
+    private static void translateTree(View view) {
+        if (view instanceof TextView) translate((TextView) view);
+        if (!(view instanceof ViewGroup)) return;
+        ViewGroup group = (ViewGroup) view;
+        for (int i = 0; i < group.getChildCount(); i++) translateTree(group.getChildAt(i));
+    }
+
+    private static void translate(TextView view) {
+        CharSequence value = view.getText();
+        if (value == null) return;
+        String text = value.toString();
+        String translated = null;
+
+        if ("VPN CONFIG".equals(text)) translated = "إعدادات الـ VPN";
+        else if ("VPN".equals(text)) translated = "تشغيل وإيقاف الـ VPN";
+        else if (text.startsWith("TARGET APPLICATIONS  ")) {
+            translated = "التطبيقات المستهدفة  " + text.substring("TARGET APPLICATIONS  ".length());
+        }
+        else if ("PACKET RANGE".equals(text)) translated = "فلترة Payload";
+        else if ("ROBOT LIGHT OUTBOUND THROTTLE".equals(text)) translated = "الخنق الخفيف بالتوازي مع التجميد";
+        else if ("ROBOT WHITE-RETURN OUTBOUND THROTTLE".equals(text)) translated = "الخنق بعد عودة الأبيض";
+        else if ("FREEZE HISTORY • LAST 5".equals(text)) translated = "سجل دورات التجميد • آخر 5";
+        else if ("DETAILED FREEZE LOG • LAST 3   ▸".equals(text)) translated = "السجل التفصيلي للتجميد • آخر 3   ▸";
+        else if ("DETAILED FREEZE LOG • LAST 3   ▾".equals(text)) translated = "السجل التفصيلي للتجميد • آخر 3   ▾";
+        else if ("ROBOT MAX FREEZE".equals(text)) translated = "الحد الأقصى لمدة تجميد الروبوت";
+        else if ("SHOW CIRCLES".equals(text)) translated = "إظهار الدوائر";
+        else if ("HIDE CIRCLES".equals(text)) translated = "إخفاء الدوائر";
+
+        if (translated != null && !translated.equals(text)) view.setText(translated);
+    }
+}
