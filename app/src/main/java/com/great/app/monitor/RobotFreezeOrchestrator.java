@@ -67,7 +67,8 @@ public final class RobotFreezeOrchestrator {
         synchronized (lock) { visualCycleBusy = false; }
         GlobalRobotOutboundThrottle throttle = GlobalRobotOutboundThrottle.instance();
         if (freezeActuallyRan && throttle.lightActive()) {
-            throttle.finishFreezeAndStartPostThrottle();
+            // Only this visual white-return path uses the user-configurable post-Freeze card.
+            throttle.finishVisualFreezeAndStartPostThrottle();
         }
     }
 
@@ -81,7 +82,7 @@ public final class RobotFreezeOrchestrator {
     }
 
     public void visualFreezeStarted() {
-        GlobalRobotOutboundThrottle.instance().startLightForFreeze();
+        GlobalRobotOutboundThrottle.instance().startLightForVisualFreeze();
     }
 
     public boolean periodicFreezeActive() {
@@ -126,7 +127,7 @@ public final class RobotFreezeOrchestrator {
 
         if (!run) return;
         GreatEngine.instance().freezeCore().setHoldTrigger(true);
-        GlobalRobotOutboundThrottle.instance().startLightForFreeze();
+        GlobalRobotOutboundThrottle.instance().startLightForPeriodicFreeze();
         final int chosenDuration = durationMs;
         synchronized (lock) {
             periodicEnd = scheduler.schedule(this::finishPeriodicFreeze,
@@ -142,7 +143,8 @@ public final class RobotFreezeOrchestrator {
         }
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
         if (FreezeMonitorService.isMonitoringActive()) {
-            GlobalRobotOutboundThrottle.instance().finishFreezeAndStartPostThrottle();
+            // Periodic post-Freeze throttle keeps its fixed profile and ignores the visual card.
+            GlobalRobotOutboundThrottle.instance().finishPeriodicFreezeAndStartPostThrottle();
         } else {
             GlobalRobotOutboundThrottle.instance().cancelActiveCycle();
         }
