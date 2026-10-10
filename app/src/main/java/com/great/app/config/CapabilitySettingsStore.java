@@ -22,6 +22,12 @@ public final class CapabilitySettingsStore {
     private static final String ROBOT_WHITE_RETURN_START_MAX_MS = "robot_white_return_start_max_ms";
     private static final String ROBOT_WHITE_RETURN_DURATION_MIN_MS = "robot_white_return_duration_min_ms";
     private static final String ROBOT_WHITE_RETURN_DURATION_MAX_MS = "robot_white_return_duration_max_ms";
+    private static final String ROBOT_LIGHT_THROTTLE_ENABLED = "robot_light_throttle_enabled";
+    private static final String ROBOT_LIGHT_STOP_ON_WHITE = "robot_light_stop_on_white";
+    private static final String ROBOT_LIGHT_START_MIN_MS = "robot_light_start_min_ms";
+    private static final String ROBOT_LIGHT_START_MAX_MS = "robot_light_start_max_ms";
+    private static final String ROBOT_LIGHT_DURATION_MIN_MS = "robot_light_duration_min_ms";
+    private static final String ROBOT_LIGHT_DURATION_MAX_MS = "robot_light_duration_max_ms";
 
     private final SharedPreferences prefs;
 
@@ -117,6 +123,41 @@ public final class CapabilitySettingsStore {
                 .apply();
     }
 
+    public boolean robotLightThrottleEnabled() {
+        return prefs.getBoolean(ROBOT_LIGHT_THROTTLE_ENABLED, true);
+    }
+
+    public void setRobotLightThrottleEnabled(boolean enabled) {
+        prefs.edit().putBoolean(ROBOT_LIGHT_THROTTLE_ENABLED, enabled).apply();
+    }
+
+    public boolean robotLightStopOnWhiteReturn() {
+        return prefs.getBoolean(ROBOT_LIGHT_STOP_ON_WHITE, true);
+    }
+
+    public void setRobotLightStopOnWhiteReturn(boolean enabled) {
+        prefs.edit().putBoolean(ROBOT_LIGHT_STOP_ON_WHITE, enabled).apply();
+    }
+
+    public int robotLightStartMinMs() { return robotLightRange()[0]; }
+    public int robotLightStartMaxMs() { return robotLightRange()[1]; }
+    public int robotLightDurationMinMs() { return robotLightRange()[2]; }
+    public int robotLightDurationMaxMs() { return robotLightRange()[3]; }
+
+    public void setRobotLightThrottleRange(int startMinMs, int startMaxMs,
+                                           int durationMinMs, int durationMaxMs) {
+        if (!GlobalRobotOutboundThrottle.validLightRange(
+                startMinMs, startMaxMs, durationMinMs, durationMaxMs)) {
+            throw new IllegalArgumentException("Light throttle ranges must be ordered and stay inside 1..500 ms");
+        }
+        prefs.edit()
+                .putInt(ROBOT_LIGHT_START_MIN_MS, startMinMs)
+                .putInt(ROBOT_LIGHT_START_MAX_MS, startMaxMs)
+                .putInt(ROBOT_LIGHT_DURATION_MIN_MS, durationMinMs)
+                .putInt(ROBOT_LIGHT_DURATION_MAX_MS, durationMaxMs)
+                .apply();
+    }
+
     private int[] robotWhiteReturnRange() {
         int startMin = prefs.getInt(ROBOT_WHITE_RETURN_START_MIN_MS,
                 GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_START_MIN_MS);
@@ -132,6 +173,26 @@ public final class CapabilitySettingsStore {
                     GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_START_MAX_MS,
                     GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_DURATION_MIN_MS,
                     GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_DURATION_MAX_MS
+            };
+        }
+        return new int[]{startMin, startMax, durationMin, durationMax};
+    }
+
+    private int[] robotLightRange() {
+        int startMin = prefs.getInt(ROBOT_LIGHT_START_MIN_MS,
+                GlobalRobotOutboundThrottle.DEFAULT_LIGHT_START_MIN_MS);
+        int startMax = prefs.getInt(ROBOT_LIGHT_START_MAX_MS,
+                GlobalRobotOutboundThrottle.DEFAULT_LIGHT_START_MAX_MS);
+        int durationMin = prefs.getInt(ROBOT_LIGHT_DURATION_MIN_MS,
+                GlobalRobotOutboundThrottle.DEFAULT_LIGHT_DURATION_MIN_MS);
+        int durationMax = prefs.getInt(ROBOT_LIGHT_DURATION_MAX_MS,
+                GlobalRobotOutboundThrottle.DEFAULT_LIGHT_DURATION_MAX_MS);
+        if (!GlobalRobotOutboundThrottle.validLightRange(startMin, startMax, durationMin, durationMax)) {
+            return new int[]{
+                    GlobalRobotOutboundThrottle.DEFAULT_LIGHT_START_MIN_MS,
+                    GlobalRobotOutboundThrottle.DEFAULT_LIGHT_START_MAX_MS,
+                    GlobalRobotOutboundThrottle.DEFAULT_LIGHT_DURATION_MIN_MS,
+                    GlobalRobotOutboundThrottle.DEFAULT_LIGHT_DURATION_MAX_MS
             };
         }
         return new int[]{startMin, startMax, durationMin, durationMax};
