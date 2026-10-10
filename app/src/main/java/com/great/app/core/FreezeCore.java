@@ -75,8 +75,8 @@ public final class FreezeCore implements AutoCloseable {
     public static final int DEFAULT_DURATION_SECONDS = 5;
     public static final int MIN_DURATION_SECONDS = 1;
     public static final int MAX_DURATION_SECONDS = 10;
-    public static final int MIN_PAYLOAD_LIMIT = 20;
-    public static final int MAX_PAYLOAD_LIMIT = 500;
+    public static final int MIN_PAYLOAD_LIMIT = 1;
+    public static final int MAX_PAYLOAD_LIMIT = 600;
     public static final int DEFAULT_PAYLOAD_MIN = 20;
     public static final int DEFAULT_PAYLOAD_MAX = 500;
     public static final int DEFAULT_RANDOM_PAYLOAD_MIN_FROM = 20;
@@ -263,11 +263,11 @@ public final class FreezeCore implements AutoCloseable {
         }
     }
 
-    boolean shouldHold(int payloadLength) { return payloadLength > payloadMin && payloadLength < payloadMax; }
+    boolean shouldHold(int payloadLength) { return payloadLength >= payloadMin && payloadLength <= payloadMax; }
 
     public void setPayloadRange(int min, int max) {
         if (min < MIN_PAYLOAD_LIMIT || max > MAX_PAYLOAD_LIMIT || min >= max) {
-            throw new IllegalArgumentException("Payload range must be 20..500 bytes and min must be less than max");
+            throw new IllegalArgumentException("Payload range must be 1..600 bytes and min must be less than max");
         }
         synchronized (lock) {
             fixedPayloadMin = min;
@@ -278,7 +278,7 @@ public final class FreezeCore implements AutoCloseable {
 
     public void setRandomPayloadRange(int minFrom, int minTo, int maxFrom, int maxTo) {
         if (!validRandomPayloadRange(minFrom, minTo, maxFrom, maxTo)) {
-            throw new IllegalArgumentException("Random payload ranges must stay inside 20..500 and minimum range must remain below maximum range");
+            throw new IllegalArgumentException("Random payload ranges must stay inside 1..600 and minimum range must remain below maximum range");
         }
         synchronized (lock) {
             randomPayloadMinFrom = minFrom;
