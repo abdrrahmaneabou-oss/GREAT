@@ -235,7 +235,7 @@ public final class FreezeCoreTest {
         }
     }
 
-    @Test public void manualReleaseStartsAndExpiresOutboundThrottle() throws Exception {
+    @Test public void manualReleaseDoesNotStartOutboundThrottleYet() throws Exception {
         try (Harness h = new Harness()) {
             h.core.setOutboundThrottleEnabled(true);
             h.core.attach(p -> { });
@@ -243,17 +243,13 @@ public final class FreezeCoreTest {
             assertEquals(PacketDecision.HOLD,
                     h.decide(TestPackets.udp(PacketDirection.INBOUND, 443, 100, 0)));
             h.state.set(Capability.FREEZE, false);
-            assertTrue(h.core.outboundThrottleActive());
-            assertEquals(PacketDecision.HOLD,
-                    h.decide(TestPackets.udp(PacketDirection.OUTBOUND, 443, 100, 1)));
-            Thread.sleep(FreezeCore.OUTBOUND_THROTTLE_WINDOW_MS + 60L);
             assertFalse(h.core.outboundThrottleActive());
             assertEquals(PacketDecision.PASS,
-                    h.decide(TestPackets.udp(PacketDirection.OUTBOUND, 443, 100, 2)));
+                    h.decide(TestPackets.udp(PacketDirection.OUTBOUND, 443, 100, 1)));
         }
     }
 
-    @Test public void robotReleaseAlsoStartsOutboundThrottle() throws Exception {
+    @Test public void robotWhiteReturnStartsAndExpiresOutboundThrottle() throws Exception {
         try (Harness h = new Harness()) {
             h.core.setOutboundThrottleEnabled(true);
             h.core.attach(p -> { });
@@ -261,10 +257,13 @@ public final class FreezeCoreTest {
             Thread.sleep(150);
             assertEquals(PacketDecision.HOLD,
                     h.decide(TestPackets.udp(PacketDirection.INBOUND, 443, 100, 0)));
+            h.core.startOutboundThrottleFromRobotWhiteReturn();
             h.core.setHoldTrigger(false);
             assertTrue(h.core.outboundThrottleActive());
             assertEquals(PacketDecision.HOLD,
                     h.decide(TestPackets.udp(PacketDirection.OUTBOUND, 443, 100, 1)));
+            Thread.sleep(FreezeCore.OUTBOUND_THROTTLE_WINDOW_MS + 60L);
+            assertFalse(h.core.outboundThrottleActive());
         }
     }
 }
