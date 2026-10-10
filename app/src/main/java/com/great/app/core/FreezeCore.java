@@ -244,6 +244,14 @@ public final class FreezeCore implements AutoCloseable {
         }
     }
 
+    /** Starts the OUTBOUND throttle only for a genuine ROBOT white-return release. */
+    public void startOutboundThrottleFromRobotWhiteReturn() {
+        synchronized (lock) {
+            if (closed || !visualMonitorHold || manualEnabled) return;
+            startOutboundThrottleLocked();
+        }
+    }
+
     public void setCycleListener(CycleListener listener) { synchronized (lock) { cycleListener = listener; } }
 
     public void onCapabilityChanged(Capability capability, boolean value) {
@@ -396,7 +404,6 @@ public final class FreezeCore implements AutoCloseable {
         buffer.clear();
         CycleWork work = finishCycleLocked(all);
         long session = generation;
-        if (!all.isEmpty()) startOutboundThrottleLocked();
         releases.execute(() -> release(work, session));
     }
 
