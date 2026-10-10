@@ -90,6 +90,7 @@ public final class GreatVpnService extends VpnService {
                     tuning.freezePayloadMinFrom(), tuning.freezePayloadMinTo(),
                     tuning.freezePayloadMaxFrom(), tuning.freezePayloadMaxTo());
             engine.freezeCore().setRandomPayloadRangeEnabled(tuning.freezePayloadRandomEnabled());
+            engine.freezeCore().setOutboundThrottleEnabled(tuning.outboundReleaseThrottleEnabled());
 
             refreshTargets();
             raw = new SecureConfigStore(this).load();
