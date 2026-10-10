@@ -12,6 +12,10 @@ public final class PixelTriggerMonitorEngineTest {
         return new PixelTriggerMonitorEngine.Sample(rgb, rgb.length);
     }
 
+    private static PixelTriggerMonitorEngine deterministic(PixelTriggerMonitorEngine.Listener listener) {
+        return new PixelTriggerMonitorEngine(listener, false);
+    }
+
     @Test public void whiteClassifierMatchesPixelTriggerThresholds() {
         assertTrue(PixelTriggerMonitorEngine.isPackedWhite(0x00ffffff));
         assertTrue(PixelTriggerMonitorEngine.isPackedWhite(0x00d0d0d0));
@@ -43,7 +47,7 @@ public final class PixelTriggerMonitorEngineTest {
 
     @Test public void requiresThreeConsecutiveWhiteFramesToArm() {
         List<PixelTriggerMonitorEngine.State> states = new ArrayList<>();
-        PixelTriggerMonitorEngine engine = new PixelTriggerMonitorEngine(states::add);
+        PixelTriggerMonitorEngine engine = deterministic(states::add);
         PixelTriggerMonitorEngine.Sample white = sample(0xffffff, 0xffffff, 0xffffff, 0xffffff, 0xffffff);
         engine.process(white);
         engine.process(white);
@@ -54,7 +58,7 @@ public final class PixelTriggerMonitorEngineTest {
     }
 
     @Test public void darkCenterCanFireEvenWhenRingProbesStayBright() {
-        PixelTriggerMonitorEngine engine = new PixelTriggerMonitorEngine(null);
+        PixelTriggerMonitorEngine engine = deterministic(null);
         PixelTriggerMonitorEngine.Sample white = sample(0xffffff, 0xffffff, 0xffffff, 0xffffff, 0xffffff);
         engine.process(white); engine.process(white); engine.process(white);
         assertEquals(PixelTriggerMonitorEngine.State.ARMED, engine.state());
@@ -64,7 +68,7 @@ public final class PixelTriggerMonitorEngineTest {
     }
 
     @Test public void firedStateStaysUntilThreeWhiteFramesReturn() {
-        PixelTriggerMonitorEngine engine = new PixelTriggerMonitorEngine(null);
+        PixelTriggerMonitorEngine engine = deterministic(null);
         PixelTriggerMonitorEngine.Sample white = sample(0xffffff, 0xffffff, 0xffffff, 0xffffff, 0xffffff);
         PixelTriggerMonitorEngine.Sample dark = sample(0x101010, 0x101010, 0x101010, 0x101010, 0x101010);
         engine.process(white); engine.process(white); engine.process(white);
@@ -78,7 +82,7 @@ public final class PixelTriggerMonitorEngineTest {
     }
 
     @Test public void oneBadFrameBreaksArmingStreak() {
-        PixelTriggerMonitorEngine engine = new PixelTriggerMonitorEngine(null);
+        PixelTriggerMonitorEngine engine = deterministic(null);
         PixelTriggerMonitorEngine.Sample white = sample(0xffffff, 0xffffff, 0xffffff, 0xffffff, 0xffffff);
         PixelTriggerMonitorEngine.Sample dark = sample(0x101010, 0x101010, 0x101010, 0x101010, 0x101010);
         engine.process(white);
