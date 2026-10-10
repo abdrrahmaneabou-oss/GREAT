@@ -16,6 +16,17 @@ public final class FreezeCore implements AutoCloseable {
     public interface OutputSink { void emit(PacketEnvelope packet) throws Exception; }
     public interface CycleListener { void onCycleCompleted(CycleStats stats); }
 
+    public static final int TRACE_PAYLOAD_KNOWN = 1 << 16;
+    public static final int TRACE_REACHED_PAYLOAD = 1 << 17;
+    public static final int TRACE_PAYLOAD_PASS = 1 << 18;
+    public static final int TRACE_RAMP_PASS = 1 << 19;
+    public static final int TRACE_FROZEN = 1 << 20;
+    public static final int TRACE_DROPPED = 1 << 21;
+    public static final int TRACE_RELEASED = 1 << 22;
+    public static final int TRACE_EVICTED = 1 << 23;
+    private static final int TRACE_PAYLOAD_MASK = 0xffff;
+    private static final int INITIAL_TRACE_CAPACITY = 256;
+
     public static final class CycleStats {
         private final long startedAtMillis;
         private final String source;
@@ -24,9 +35,14 @@ public final class FreezeCore implements AutoCloseable {
         private final int dropped;
         private final int released;
         private final int evicted;
+        private final int payloadMin;
+        private final int payloadMax;
+        private final int[] trace;
+        private final int traceCount;
 
         CycleStats(long startedAtMillis, String source, int arrived, int frozen,
-                   int dropped, int released, int evicted) {
+                   int dropped, int released, int evicted, int payloadMin, int payloadMax,
+                   int[] trace, int traceCount) {
             this.startedAtMillis = startedAtMillis;
             this.source = source;
             this.arrived = arrived;
@@ -34,6 +50,10 @@ public final class FreezeCore implements AutoCloseable {
             this.dropped = dropped;
             this.released = released;
             this.evicted = evicted;
+            this.payloadMin = payloadMin;
+            this.payloadMax = payloadMax;
+            this.trace = trace;
+            this.traceCount = traceCount;
         }
 
         public long startedAtMillis() { return startedAtMillis; }
@@ -43,6 +63,12 @@ public final class FreezeCore implements AutoCloseable {
         public int dropped() { return dropped; }
         public int released() { return released; }
         public int evicted() { return evicted; }
+        public int payloadMin() { return payloadMin; }
+        public int payloadMax() { return payloadMax; }
+        public int traceCount() { return traceCount; }
+        public int traceValue(int index) { return trace[index]; }
+        public int tracePayloadBytes(int index) { return trace[index] & TRACE_PAYLOAD_MASK; }
+        public boolean traceHas(int index, int flag) { return (trace[index] & flag) != 0; }
     }
 
     public static final int CAPACITY = 10_000;
@@ -114,6 +140,12 @@ public final class FreezeCore implements AutoCloseable {
     private int cycleArrived;
     private int cycleFrozen;
     private int cycleEvicted;
+    private int cyclePayloadMin;
+    private int cyclePayloadMax;
+    private int[] cycleTrace = new int[INITIAL_TRACE_CAPACITY];
+    private int cycleTraceCount;
+    private int evictTraceScanIndex;
+    private long cycleSerial;
 
     private boolean manualEnabled;
     private boolean visualMonitorHold;
@@ -156,9 +188,15 @@ public final class FreezeCore implements AutoCloseable {
             }
         }
 
+        int traceIndex = -1;
+        long traceSerial = -1L;
         if (packet.direction() == PacketDirection.INBOUND) {
             synchronized (lock) {
-                if (!closed && cycleActive && effectiveLocked()) cycleArrived++;
+                if (!closed && cycleActive && effectiveLocked()) {
+                    cycleArrived++;
+                    traceIndex = appendTraceLocked();
+                    traceSerial = cycleSerial;
+                }
             }
         }
 
@@ -171,20 +209,57 @@ public final class FreezeCore implements AutoCloseable {
         if (udpLength < 8 || offset + udpLength > ipLength) return PacketDecision.PASS;
         int remotePort = m.sourcePort();
         if (remotePort >= 7000 && remotePort <= 10000) return PacketDecision.PASS;
+        int payloadLength = udpLength - 8;
         synchronized (lock) {
-            if (closed || !effectiveLocked() || !shouldHold(udpLength - 8)) return PacketDecision.PASS;
+            if (closed || !effectiveLocked()) return PacketDecision.PASS;
+            if (traceIndex >= 0 && traceSerial == cycleSerial && traceIndex < cycleTraceCount) {
+                cycleTrace[traceIndex] = (payloadLength & TRACE_PAYLOAD_MASK)
+                        | TRACE_PAYLOAD_KNOWN | TRACE_REACHED_PAYLOAD;
+            }
+            if (!shouldHold(payloadLength)) return PacketDecision.PASS;
+            markTraceLocked(traceIndex, traceSerial, TRACE_PAYLOAD_PASS);
             if (!rampAllowsHoldLocked(System.nanoTime())) return PacketDecision.PASS;
+            markTraceLocked(traceIndex, traceSerial, TRACE_RAMP_PASS);
             if (buffer.size() == CAPACITY) {
                 buffer.removeFirst();
+                markOldestBufferedTraceEvictedLocked();
                 cycleEvicted++;
                 diagnostics.schedulerRejected();
             }
             byte[] copy = new byte[packet.length()];
             System.arraycopy(packet.data(), 0, copy, 0, copy.length);
             buffer.addLast(new PacketEnvelope(copy, copy.length, packet.direction(), packet.monotonicNanos()));
+            markTraceLocked(traceIndex, traceSerial, TRACE_FROZEN);
             cycleFrozen++;
             diagnostics.scheduled();
             return PacketDecision.HOLD;
+        }
+    }
+
+    private int appendTraceLocked() {
+        if (cycleTraceCount == cycleTrace.length) {
+            int nextLength = cycleTrace.length < 16_384 ? cycleTrace.length * 2 : cycleTrace.length + 16_384;
+            int[] next = new int[nextLength];
+            System.arraycopy(cycleTrace, 0, next, 0, cycleTraceCount);
+            cycleTrace = next;
+        }
+        cycleTrace[cycleTraceCount] = 0;
+        return cycleTraceCount++;
+    }
+
+    private void markTraceLocked(int index, long serial, int flag) {
+        if (index >= 0 && serial == cycleSerial && index < cycleTraceCount) cycleTrace[index] |= flag;
+    }
+
+    private void markOldestBufferedTraceEvictedLocked() {
+        while (evictTraceScanIndex < cycleTraceCount) {
+            int value = cycleTrace[evictTraceScanIndex];
+            if ((value & TRACE_FROZEN) != 0 && (value & TRACE_EVICTED) == 0) {
+                cycleTrace[evictTraceScanIndex] = value | TRACE_EVICTED;
+                evictTraceScanIndex++;
+                return;
+            }
+            evictTraceScanIndex++;
         }
     }
 
@@ -270,8 +345,8 @@ public final class FreezeCore implements AutoCloseable {
             boolean nowEffective = effectiveLocked();
             if (!wasEffective && nowEffective) {
                 buffer.clear();
-                startCycleLocked("MANUAL");
                 choosePayloadRangeForCycleLocked();
+                startCycleLocked("MANUAL");
                 startRampLocked();
             } else if (wasEffective && !nowEffective) {
                 clearRampLocked();
@@ -288,8 +363,8 @@ public final class FreezeCore implements AutoCloseable {
             boolean nowEffective = effectiveLocked();
             if (!wasEffective && nowEffective) {
                 buffer.clear();
-                startCycleLocked("ROBOT");
                 choosePayloadRangeForCycleLocked();
+                startCycleLocked("ROBOT");
                 startRampLocked();
             } else if (wasEffective && !nowEffective) {
                 clearRampLocked();
@@ -309,18 +384,42 @@ public final class FreezeCore implements AutoCloseable {
         cycleArrived = 0;
         cycleFrozen = 0;
         cycleEvicted = 0;
+        cyclePayloadMin = payloadMin;
+        cyclePayloadMax = payloadMax;
+        cycleTrace = new int[INITIAL_TRACE_CAPACITY];
+        cycleTraceCount = 0;
+        evictTraceScanIndex = 0;
+        cycleSerial++;
     }
 
     private CycleWork finishCycleLocked(ArrayList<PacketEnvelope> packets) {
+        int[] trace = cycleTrace;
+        int traceCount = cycleTraceCount;
+        int[] heldTraceIds = buildHeldTraceIdsLocked(packets.size());
         CycleWork work = new CycleWork(cycleStartedAtMillis, cycleSource, cycleArrived,
-                cycleFrozen, cycleEvicted, packets);
+                cycleFrozen, cycleEvicted, cyclePayloadMin, cyclePayloadMax,
+                packets, trace, traceCount, heldTraceIds);
         cycleActive = false;
         cycleStartedAtMillis = 0L;
         cycleSource = "UNKNOWN";
         cycleArrived = 0;
         cycleFrozen = 0;
         cycleEvicted = 0;
+        cycleTrace = new int[INITIAL_TRACE_CAPACITY];
+        cycleTraceCount = 0;
+        evictTraceScanIndex = 0;
         return work;
+    }
+
+    private int[] buildHeldTraceIdsLocked(int expected) {
+        int[] ids = new int[expected];
+        int out = 0;
+        for (int i = 0; i < cycleTraceCount && out < expected; i++) {
+            int value = cycleTrace[i];
+            if ((value & TRACE_FROZEN) != 0 && (value & TRACE_EVICTED) == 0) ids[out++] = i;
+        }
+        while (out < expected) ids[out++] = -1;
+        return ids;
     }
 
     private void choosePayloadRangeForCycleLocked() {
@@ -409,6 +508,7 @@ public final class FreezeCore implements AutoCloseable {
 
     private void release(CycleWork work, long session) {
         ArrayList<PacketEnvelope> all = work.packets;
+        int[] traceIds = work.heldTraceIds;
         try {
             if (!all.isEmpty()) {
                 int dropPercent = MIN_RELEASE_DROP_PERCENT + rng.nextInt(MAX_RELEASE_DROP_PERCENT - MIN_RELEASE_DROP_PERCENT + 1);
@@ -416,11 +516,28 @@ public final class FreezeCore implements AutoCloseable {
                 dropCount = Math.max(0, Math.min(dropCount, all.size()));
                 work.dropped = dropCount;
                 if (dropCount > 0) {
-                    int maxStart = all.size() - dropCount;
+                    int oldSize = all.size();
+                    int maxStart = oldSize - dropCount;
                     int dropStart = maxStart == 0 ? 0 : rng.nextInt(maxStart + 1);
+                    for (int i = dropStart; i < dropStart + dropCount; i++) {
+                        markWorkTrace(work, traceIds[i], TRACE_DROPPED);
+                    }
                     all.subList(dropStart, dropStart + dropCount).clear();
+                    int[] remaining = new int[oldSize - dropCount];
+                    if (dropStart > 0) System.arraycopy(traceIds, 0, remaining, 0, dropStart);
+                    int tail = oldSize - (dropStart + dropCount);
+                    if (tail > 0) System.arraycopy(traceIds, dropStart + dropCount, remaining, dropStart, tail);
+                    traceIds = remaining;
                 }
-                if (all.size() > 1) Collections.shuffle(all, rng);
+                if (all.size() > 1) {
+                    for (int i = all.size() - 1; i > 0; i--) {
+                        int j = rng.nextInt(i + 1);
+                        Collections.swap(all, i, j);
+                        int tmp = traceIds[i];
+                        traceIds[i] = traceIds[j];
+                        traceIds[j] = tmp;
+                    }
+                }
                 int index = 0;
                 while (index < all.size()) {
                     int burstSize = MIN_RELEASE_BURST + rng.nextInt(MAX_RELEASE_BURST - MIN_RELEASE_BURST + 1);
@@ -434,6 +551,7 @@ public final class FreezeCore implements AutoCloseable {
                         try {
                             output.emit(all.get(index));
                             diagnostics.released();
+                            markWorkTrace(work, traceIds[index], TRACE_RELEASED);
                             work.released++;
                         } catch (Exception e) { return; }
                         index++;
@@ -450,13 +568,18 @@ public final class FreezeCore implements AutoCloseable {
         }
     }
 
+    private static void markWorkTrace(CycleWork work, int index, int flag) {
+        if (index >= 0 && index < work.traceCount) work.trace[index] |= flag;
+    }
+
     private void publishCycle(CycleWork work) {
         CycleListener listener;
         synchronized (lock) { listener = cycleListener; }
         if (listener == null) return;
         try {
             listener.onCycleCompleted(new CycleStats(work.startedAtMillis, work.source, work.arrived,
-                    work.frozen, work.dropped, work.released, work.evicted));
+                    work.frozen, work.dropped, work.released, work.evicted,
+                    work.payloadMin, work.payloadMax, work.trace, work.traceCount));
         } catch (RuntimeException ignored) { }
     }
 
@@ -466,18 +589,29 @@ public final class FreezeCore implements AutoCloseable {
         final int arrived;
         final int frozen;
         final int evicted;
+        final int payloadMin;
+        final int payloadMax;
         final ArrayList<PacketEnvelope> packets;
+        final int[] trace;
+        final int traceCount;
+        final int[] heldTraceIds;
         int dropped;
         int released;
 
         CycleWork(long startedAtMillis, String source, int arrived, int frozen, int evicted,
-                  ArrayList<PacketEnvelope> packets) {
+                  int payloadMin, int payloadMax, ArrayList<PacketEnvelope> packets,
+                  int[] trace, int traceCount, int[] heldTraceIds) {
             this.startedAtMillis = startedAtMillis;
             this.source = source;
             this.arrived = arrived;
             this.frozen = frozen;
             this.evicted = evicted;
+            this.payloadMin = payloadMin;
+            this.payloadMax = payloadMax;
             this.packets = packets;
+            this.trace = trace;
+            this.traceCount = traceCount;
+            this.heldTraceIds = heldTraceIds;
         }
     }
 
@@ -501,6 +635,9 @@ public final class FreezeCore implements AutoCloseable {
             cycleArrived = 0;
             cycleFrozen = 0;
             cycleEvicted = 0;
+            cycleTrace = new int[INITIAL_TRACE_CAPACITY];
+            cycleTraceCount = 0;
+            evictTraceScanIndex = 0;
             clearRampLocked();
             clearOutboundThrottleLocked();
             generation++;
