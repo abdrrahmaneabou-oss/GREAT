@@ -13,7 +13,7 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * Robot-only timing layer. It decides whether a Robot Freeze attempt runs, owns the independent
- * 30..60 second random Freeze cadence, and couples the light/global throttle to actual Robot hold.
+ * 30..60 second random Freeze cadence, and couples Robot throttles to actual Robot hold.
  * FreezeCore itself remains unchanged so packet filtering, ramping and release mechanics stay exact.
  */
 public final class RobotFreezeOrchestrator {
@@ -65,10 +65,10 @@ public final class RobotFreezeOrchestrator {
 
     public void finishVisualCycle(boolean freezeActuallyRan) {
         synchronized (lock) { visualCycleBusy = false; }
-        GlobalRobotOutboundThrottle throttle = GlobalRobotOutboundThrottle.instance();
-        if (freezeActuallyRan && throttle.lightActive()) {
-            // Only this visual white-return path uses the user-configurable post-Freeze card.
-            throttle.finishVisualFreezeAndStartPostThrottle();
+        if (freezeActuallyRan) {
+            // White return always terminates light throttling immediately, even if its duration mode
+            // would otherwise still be active. Post-Freeze throttling remains controlled separately.
+            GlobalRobotOutboundThrottle.instance().finishVisualFreezeAndStartPostThrottle();
         }
     }
 
@@ -143,7 +143,7 @@ public final class RobotFreezeOrchestrator {
         }
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
         if (FreezeMonitorService.isMonitoringActive()) {
-            // Periodic post-Freeze throttle keeps its fixed profile and ignores the visual card.
+            // Periodic post-Freeze throttle keeps its fixed profile and ignores the visual post card.
             GlobalRobotOutboundThrottle.instance().finishPeriodicFreezeAndStartPostThrottle();
         } else {
             GlobalRobotOutboundThrottle.instance().cancelActiveCycle();
