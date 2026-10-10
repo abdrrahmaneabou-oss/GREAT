@@ -55,7 +55,7 @@ public final class CapabilitySettingsStore {
 
     public void setFreezePayloadRange(int min, int max) {
         if (!validPayloadRange(min, max)) {
-            throw new IllegalArgumentException("Payload range must be 20..500 bytes and min must be less than max");
+            throw new IllegalArgumentException("Payload range must be 1..600 bytes and min must be less than max");
         }
         prefs.edit()
                 .putInt(FREEZE_PAYLOAD_MIN, min)
@@ -79,7 +79,7 @@ public final class CapabilitySettingsStore {
     public void setFreezePayloadRandomRange(int minFrom, int minTo, int maxFrom, int maxTo) {
         if (!validRandomPayloadRange(minFrom, minTo, maxFrom, maxTo)) {
             throw new IllegalArgumentException(
-                    "Random payload ranges must stay inside 20..500 and minimum range must remain below maximum range");
+                    "Random payload ranges must stay inside 1..600 and minimum range must remain below maximum range");
         }
         prefs.edit()
                 .putInt(FREEZE_PAYLOAD_MIN_FROM, minFrom)
