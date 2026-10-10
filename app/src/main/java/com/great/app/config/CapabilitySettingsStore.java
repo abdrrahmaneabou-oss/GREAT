@@ -16,6 +16,7 @@ public final class CapabilitySettingsStore {
     private static final String FREEZE_PAYLOAD_MIN_TO = "freeze_payload_min_to";
     private static final String FREEZE_PAYLOAD_MAX_FROM = "freeze_payload_max_from";
     private static final String FREEZE_PAYLOAD_MAX_TO = "freeze_payload_max_to";
+    private static final String OUTBOUND_RELEASE_THROTTLE_ENABLED = "outbound_release_throttle_enabled";
 
     private final SharedPreferences prefs;
 
@@ -81,6 +82,14 @@ public final class CapabilitySettingsStore {
                 .putInt(FREEZE_PAYLOAD_MAX_FROM, maxFrom)
                 .putInt(FREEZE_PAYLOAD_MAX_TO, maxTo)
                 .apply();
+    }
+
+    public boolean outboundReleaseThrottleEnabled() {
+        return prefs.getBoolean(OUTBOUND_RELEASE_THROTTLE_ENABLED, true);
+    }
+
+    public void setOutboundReleaseThrottleEnabled(boolean enabled) {
+        prefs.edit().putBoolean(OUTBOUND_RELEASE_THROTTLE_ENABLED, enabled).apply();
     }
 
     private int[] randomPayloadRange() {
