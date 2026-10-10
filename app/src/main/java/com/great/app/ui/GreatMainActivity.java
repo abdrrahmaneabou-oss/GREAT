@@ -68,6 +68,8 @@ public final class GreatMainActivity extends Activity {
     private TextView robotTimeoutValue;
     private LinearLayout targetList;
     private LinearLayout freezeHistoryList;
+    private LinearLayout detailedFreezeHistoryBody;
+    private TextView detailedFreezeHistoryHeading;
     private EditText packageInput;
     private EditText payloadMinInput;
     private EditText payloadMaxInput;
@@ -78,6 +80,7 @@ public final class GreatMainActivity extends Activity {
     private LinearLayout payloadFixedInputs;
     private LinearLayout payloadRandomInputs;
     private Switch payloadRandomSwitch;
+    private boolean detailedFreezeExpanded;
     private boolean overlayPending;
     private boolean monitorCapturePending;
     private boolean monitorEditAfterStart;
@@ -126,6 +129,7 @@ public final class GreatMainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         refreshFreezeHistory();
+        if (detailedFreezeExpanded) refreshDetailedFreezeHistory();
         if (Settings.canDrawOverlays(this)) {
             if (overlayPending) {
                 overlayPending = false;
@@ -152,6 +156,7 @@ public final class GreatMainActivity extends Activity {
         add(root, packetRangeCard(), 14);
         add(root, outboundThrottleCard(), 14);
         add(root, freezeHistoryCard(), 14);
+        add(root, detailedFreezeHistoryCard(), 14);
         add(root, robotTimeoutCard(), 14);
         add(root, showCirclesCard(), 14);
         add(root, hideCirclesCard(), 14);
@@ -297,6 +302,78 @@ public final class GreatMainActivity extends Activity {
                 add(freezeHistoryList, text("Queue evicted: " + record.evicted, 11, MUTED, false), 3);
             }
             index++;
+        }
+    }
+
+    private View detailedFreezeHistoryCard() {
+        LinearLayout card = card();
+        detailedFreezeHistoryHeading = text("DETAILED FREEZE LOG • LAST 3   ▸", 11, ACCENT, true);
+        detailedFreezeHistoryHeading.setMinHeight(dp(48));
+        detailedFreezeHistoryHeading.setGravity(Gravity.CENTER_VERTICAL);
+        add(card, detailedFreezeHistoryHeading, 0);
+        add(card, text("Tap to inspect every arrived packet by arrival number and UDP payload size.",
+                12, MUTED, false), 4);
+        detailedFreezeHistoryBody = column();
+        detailedFreezeHistoryBody.setVisibility(View.GONE);
+        add(card, detailedFreezeHistoryBody, 8);
+        card.setClickable(true);
+        card.setFocusable(true);
+        card.setOnClickListener(v -> {
+            detailedFreezeExpanded = !detailedFreezeExpanded;
+            detailedFreezeHistoryBody.setVisibility(detailedFreezeExpanded ? View.VISIBLE : View.GONE);
+            detailedFreezeHistoryHeading.setText(detailedFreezeExpanded
+                    ? "DETAILED FREEZE LOG • LAST 3   ▾"
+                    : "DETAILED FREEZE LOG • LAST 3   ▸");
+            if (detailedFreezeExpanded) refreshDetailedFreezeHistory();
+        });
+        return card;
+    }
+
+    private void refreshDetailedFreezeHistory() {
+        if (detailedFreezeHistoryBody == null || freezeHistory == null || !detailedFreezeExpanded) return;
+        detailedFreezeHistoryBody.removeAllViews();
+        java.util.List<FreezeHistoryStore.DetailRecord> records = freezeHistory.detailHistory();
+        if (records.isEmpty()) {
+            add(detailedFreezeHistoryBody, text("No detailed Freeze cycles yet.", 12, MUTED, false), 0);
+            return;
+        }
+        SimpleDateFormat time = new SimpleDateFormat("HH:mm:ss", Locale.getDefault());
+        int cycle = 1;
+        for (FreezeHistoryStore.DetailRecord record : records) {
+            add(detailedFreezeHistoryBody, text(
+                    "#" + cycle + "  " + time.format(new Date(record.startedAtMillis))
+                            + "  •  " + record.source
+                            + "  •  Payload > " + record.payloadMin + " && < " + record.payloadMax,
+                    13, TEXT, true), cycle == 1 ? 4 : 16);
+
+            StringBuilder lines = new StringBuilder(Math.max(96, record.trace.length * 44));
+            for (int i = 0; i < record.trace.length; i++) {
+                int value = record.trace[i];
+                lines.append('#').append(i + 1).append(" • ");
+                boolean payloadKnown = (value & FreezeCore.TRACE_PAYLOAD_KNOWN) != 0;
+                boolean reachedPayload = (value & FreezeCore.TRACE_REACHED_PAYLOAD) != 0;
+                if (payloadKnown) lines.append("Payload ").append(value & 0xffff).append(" B • ");
+                else lines.append("Payload N/A • ");
+
+                if (!reachedPayload) {
+                    lines.append("STOPPED BEFORE PAYLOAD");
+                } else if ((value & FreezeCore.TRACE_PAYLOAD_PASS) == 0) {
+                    lines.append("PAYLOAD FAIL • NOT FROZEN");
+                } else if ((value & FreezeCore.TRACE_RAMP_PASS) == 0) {
+                    lines.append("PAYLOAD PASS • RAMP FAIL • NOT FROZEN");
+                } else if ((value & FreezeCore.TRACE_FROZEN) != 0) {
+                    lines.append("PAYLOAD PASS • RAMP PASS • FROZEN");
+                    if ((value & FreezeCore.TRACE_DROPPED) != 0) lines.append(" • DROPPED");
+                    else if ((value & FreezeCore.TRACE_EVICTED) != 0) lines.append(" • EVICTED");
+                    else if ((value & FreezeCore.TRACE_RELEASED) != 0) lines.append(" • RELEASED");
+                    else lines.append(" • NOT RELEASED");
+                } else {
+                    lines.append("PAYLOAD PASS • NOT FROZEN");
+                }
+                if (i + 1 < record.trace.length) lines.append('\n');
+            }
+            add(detailedFreezeHistoryBody, text(lines.toString(), 11, MUTED, false), 6);
+            cycle++;
         }
     }
 
