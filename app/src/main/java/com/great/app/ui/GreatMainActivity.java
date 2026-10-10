@@ -206,7 +206,7 @@ public final class GreatMainActivity extends Activity {
     private View packetRangeCard() {
         LinearLayout card = card();
         add(card, text("PACKET RANGE", 11, ACCENT, true), 0);
-        add(card, text("Freeze only eligible INBOUND UDP payloads inside the saved byte thresholds.",
+        add(card, text("Freeze only eligible INBOUND UDP payloads inside the saved inclusive byte thresholds.",
                 12, MUTED, false), 8);
 
         LinearLayout toggleRow = new LinearLayout(this);
@@ -225,7 +225,7 @@ public final class GreatMainActivity extends Activity {
         payloadMaxInput = numericInput("Maximum", capabilitySettings.freezePayloadMax());
         addTwoInputs(fixedRow, payloadMinInput, payloadMaxInput);
         add(payloadFixedInputs, fixedRow, 0);
-        add(payloadFixedInputs, text("Minimum ≥ 20 bytes   •   Maximum ≤ 500 bytes   •   Minimum < Maximum",
+        add(payloadFixedInputs, text("Minimum ≥ 1 byte   •   Maximum ≤ 600 bytes   •   both limits are included",
                 11, MUTED, false), 8);
         add(card, payloadFixedInputs, 14);
 
@@ -242,7 +242,7 @@ public final class GreatMainActivity extends Activity {
         addTwoInputs(maximumRow, payloadMaxFromInput, payloadMaxToInput);
         add(payloadRandomInputs, maximumRow, 10);
         add(payloadRandomInputs, text(
-                "Each Freeze cycle picks one minimum and one maximum. Values must stay inside 20–500 and Min To < Max From.",
+                "Each Freeze cycle picks one minimum and one maximum. Values must stay inside 1–600, Min To < Max From, and the chosen minimum/maximum are included in Payload PASS.",
                 11, MUTED, false), 8);
         add(card, payloadRandomInputs, 14);
 
@@ -399,7 +399,7 @@ public final class GreatMainActivity extends Activity {
             add(detailedFreezeHistoryBody, text(
                     "#" + cycle + "  " + time.format(new Date(record.startedAtMillis))
                             + "  •  " + record.source
-                            + "  •  Payload > " + record.payloadMin + " && < " + record.payloadMax,
+                            + "  •  Payload >= " + record.payloadMin + " && <= " + record.payloadMax,
                     13, TEXT, true), cycle == 1 ? 4 : 16);
 
             StringBuilder lines = new StringBuilder(Math.max(96, record.trace.length * 44));
@@ -487,15 +487,15 @@ public final class GreatMainActivity extends Activity {
         Integer min = parseRequired(payloadMinInput, "Minimum is required");
         Integer max = parseRequired(payloadMaxInput, "Maximum is required");
         if (min == null || max == null) return;
-        if (min < FreezeCore.MIN_PAYLOAD_LIMIT) { payloadMinInput.setError("Minimum must be at least 20 bytes"); return; }
-        if (max > FreezeCore.MAX_PAYLOAD_LIMIT) { payloadMaxInput.setError("Maximum must not exceed 500 bytes"); return; }
+        if (min < FreezeCore.MIN_PAYLOAD_LIMIT) { payloadMinInput.setError("Minimum must be at least 1 byte"); return; }
+        if (max > FreezeCore.MAX_PAYLOAD_LIMIT) { payloadMaxInput.setError("Maximum must not exceed 600 bytes"); return; }
         if (min >= max) { payloadMinInput.setError("Minimum must be less than maximum"); return; }
         capabilitySettings.setFreezePayloadRange(min, max);
         capabilitySettings.setFreezePayloadRandomEnabled(false);
         FreezeCore core = GreatEngine.instance().freezeCore();
         core.setPayloadRange(min, max);
         core.setRandomPayloadRangeEnabled(false);
-        toast("Packet range saved: " + min + "–" + max + " bytes");
+        toast("Packet range saved: " + min + "–" + max + " bytes (inclusive)");
     }
 
     private void saveRandomPayloadRange() {
@@ -506,8 +506,8 @@ public final class GreatMainActivity extends Activity {
         Integer maxFrom = parseRequired(payloadMaxFromInput, "Max From is required");
         Integer maxTo = parseRequired(payloadMaxToInput, "Max To is required");
         if (minFrom == null || minTo == null || maxFrom == null || maxTo == null) return;
-        if (minFrom < FreezeCore.MIN_PAYLOAD_LIMIT) { payloadMinFromInput.setError("Min From must be at least 20 bytes"); return; }
-        if (maxTo > FreezeCore.MAX_PAYLOAD_LIMIT) { payloadMaxToInput.setError("Max To must not exceed 500 bytes"); return; }
+        if (minFrom < FreezeCore.MIN_PAYLOAD_LIMIT) { payloadMinFromInput.setError("Min From must be at least 1 byte"); return; }
+        if (maxTo > FreezeCore.MAX_PAYLOAD_LIMIT) { payloadMaxToInput.setError("Max To must not exceed 600 bytes"); return; }
         if (minFrom > minTo) { payloadMinFromInput.setError("Min From must be ≤ Min To"); return; }
         if (maxFrom > maxTo) { payloadMaxFromInput.setError("Max From must be ≤ Max To"); return; }
         if (minTo >= maxFrom) { payloadMinToInput.setError("Min To must be less than Max From"); return; }
@@ -516,7 +516,7 @@ public final class GreatMainActivity extends Activity {
         FreezeCore core = GreatEngine.instance().freezeCore();
         core.setRandomPayloadRange(minFrom, minTo, maxFrom, maxTo);
         core.setRandomPayloadRangeEnabled(true);
-        toast("Random packet range saved");
+        toast("Random packet range saved; chosen limits are inclusive");
     }
 
     private Integer parseRequired(EditText input, String emptyMessage) {
