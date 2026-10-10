@@ -23,7 +23,6 @@ public final class PixelTriggerMonitorEngine {
     public static final int PROBE_LUMINANCE_DROP = 12;
 
     public enum State { WAITING_FOR_WHITE, ARMED, FIRED }
-
     public interface Listener { void onStateChanged(State state); }
 
     public static final class Sample {
@@ -66,14 +65,20 @@ public final class PixelTriggerMonitorEngine {
     private final Listener listener;
     private final ArrayDeque<Sample> whiteFrames = new ArrayDeque<>();
     private final RobotFreezeOrchestrator robotFreeze = RobotFreezeOrchestrator.instance();
+    private final boolean robotPolicyEnabled;
     private State state = State.WAITING_FOR_WHITE;
     private Sample baseline;
     private boolean skippedVisualCycle;
     private boolean visualFreezeRan;
 
     public PixelTriggerMonitorEngine(Listener listener) {
+        this(listener, true);
+    }
+
+    PixelTriggerMonitorEngine(Listener listener, boolean robotPolicyEnabled) {
         this.listener = listener;
-        robotFreeze.ensureStarted();
+        this.robotPolicyEnabled = robotPolicyEnabled;
+        if (robotPolicyEnabled) robotFreeze.ensureStarted();
     }
 
     public State state() { return state; }
@@ -83,7 +88,7 @@ public final class PixelTriggerMonitorEngine {
         baseline = null;
         skippedVisualCycle = false;
         visualFreezeRan = false;
-        robotFreeze.resetVisualCycle();
+        if (robotPolicyEnabled) robotFreeze.resetVisualCycle();
         setState(State.WAITING_FOR_WHITE);
     }
 
@@ -99,6 +104,13 @@ public final class PixelTriggerMonitorEngine {
     private void processArmed(Sample sample) {
         whiteFrames.clear();
 
+        if (!robotPolicyEnabled) {
+            if (baseline != null && isProbeDepartureFrom(sample, baseline) && sample.isFireLuminance()) {
+                setState(State.FIRED);
+            }
+            return;
+        }
+
         if (skippedVisualCycle) {
             if (sample.isArmingWhite()) {
                 skippedVisualCycle = false;
@@ -108,9 +120,6 @@ public final class PixelTriggerMonitorEngine {
         }
 
         if (baseline == null || !isProbeDepartureFrom(sample, baseline) || !sample.isFireLuminance()) return;
-
-        // A short periodic Robot Freeze owns this moment; if the pixel is still dark after it ends,
-        // the next frame may begin a normal visual cycle.
         if (robotFreeze.periodicFreezeActive()) return;
 
         if (!robotFreeze.allowVisualFreeze()) {
@@ -139,10 +148,8 @@ public final class PixelTriggerMonitorEngine {
         if (state == next) return;
         State previous = state;
         state = next;
-
-        // Let the service change FreezeCore's real hold state first. The throttle is then coupled
-        // to the actual Robot Freeze, not merely to a detector state transition.
         if (listener != null) listener.onStateChanged(next);
+        if (!robotPolicyEnabled) return;
 
         if (previous == State.ARMED && next == State.FIRED && visualFreezeRan) {
             robotFreeze.visualFreezeStarted();
@@ -157,7 +164,6 @@ public final class PixelTriggerMonitorEngine {
         int count = Math.min(Math.min(current.count(), reference.count()), MAX_PROBE_POINTS);
         if (count <= 0) return false;
         if (probePointChanged(reference.probe(0), current.probe(0))) return true;
-
         int quorum = count >= 5 ? 3 : (count >= 3 ? 2 : 1);
         int changed = 0;
         for (int i = 1; i < count; i++) {
