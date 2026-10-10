@@ -22,6 +22,7 @@ import com.great.app.config.FreezeHistoryStore;
 import com.great.app.config.SecureConfigStore;
 import com.great.app.core.GreatEngine;
 import com.great.app.transport.AwgTransport;
+import com.great.app.transport.GlobalRobotOutboundThrottle;
 import com.great.app.transport.TunnelTransport;
 
 import java.util.Arrays;
@@ -95,6 +96,8 @@ public final class GreatVpnService extends VpnService {
                     tuning.freezePayloadMaxFrom(), tuning.freezePayloadMaxTo());
             engine.freezeCore().setRandomPayloadRangeEnabled(tuning.freezePayloadRandomEnabled());
             engine.freezeCore().setOutboundThrottleEnabled(tuning.outboundReleaseThrottleEnabled());
+            GlobalRobotOutboundThrottle.instance().setFeatureEnabled(
+                    tuning.outboundReleaseThrottleEnabled());
 
             refreshTargets();
             raw = new SecureConfigStore(this).load();
@@ -105,6 +108,7 @@ public final class GreatVpnService extends VpnService {
         } catch (Exception e) {
             if (transport != null) transport.close();
             transport = null;
+            GlobalRobotOutboundThrottle.instance().setFeatureEnabled(false);
             GreatEngine.instance().reset();
             stopSelf();
         } finally {
@@ -117,6 +121,7 @@ public final class GreatVpnService extends VpnService {
             transport.close();
             transport = null;
         }
+        GlobalRobotOutboundThrottle.instance().setFeatureEnabled(false);
         GreatEngine.instance().reset();
     }
 
