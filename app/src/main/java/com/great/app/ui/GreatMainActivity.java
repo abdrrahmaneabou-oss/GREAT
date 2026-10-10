@@ -26,6 +26,7 @@ import android.widget.Toast;
 
 import com.great.app.config.AwgConfigParser;
 import com.great.app.config.CapabilitySettingsStore;
+import com.great.app.config.FreezeHistoryStore;
 import com.great.app.config.MonitorSettingsStore;
 import com.great.app.config.SecureConfigStore;
 import com.great.app.config.TargetAppsStore;
@@ -37,7 +38,9 @@ import com.great.app.vpn.GreatVpnService;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.text.SimpleDateFormat;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.Locale;
 
 /** Minimal GREAT control surface: config, VPN, targets and the two floating circles. */
@@ -58,11 +61,13 @@ public final class GreatMainActivity extends Activity {
     private TargetAppsStore targetStore;
     private MonitorSettingsStore monitorSettings;
     private CapabilitySettingsStore capabilitySettings;
+    private FreezeHistoryStore freezeHistory;
     private MediaProjectionManager projectionManager;
     private TextView configState;
     private TextView targetHeading;
     private TextView robotTimeoutValue;
     private LinearLayout targetList;
+    private LinearLayout freezeHistoryList;
     private EditText packageInput;
     private EditText payloadMinInput;
     private EditText payloadMaxInput;
@@ -83,6 +88,7 @@ public final class GreatMainActivity extends Activity {
         targetStore = new TargetAppsStore(this);
         monitorSettings = new MonitorSettingsStore(this);
         capabilitySettings = new CapabilitySettingsStore(this);
+        freezeHistory = new FreezeHistoryStore(this);
         projectionManager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
         applySavedPayloadSettings();
         GreatEngine.instance().freezeCore().setFreezeDurationSeconds(capabilitySettings.freezeSeconds());
@@ -119,6 +125,7 @@ public final class GreatMainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        refreshFreezeHistory();
         if (Settings.canDrawOverlays(this)) {
             if (overlayPending) {
                 overlayPending = false;
@@ -144,6 +151,7 @@ public final class GreatMainActivity extends Activity {
         add(root, targetCard(), 14);
         add(root, packetRangeCard(), 14);
         add(root, outboundThrottleCard(), 14);
+        add(root, freezeHistoryCard(), 14);
         add(root, robotTimeoutCard(), 14);
         add(root, showCirclesCard(), 14);
         add(root, hideCirclesCard(), 14);
@@ -253,6 +261,45 @@ public final class GreatMainActivity extends Activity {
         return card;
     }
 
+    private View freezeHistoryCard() {
+        LinearLayout card = card();
+        add(card, text("FREEZE HISTORY • LAST 5", 11, ACCENT, true), 0);
+        add(card, text(
+                "Exact live counters. Arrived = selected-app INBOUND packets seen while Freeze was active, before IPv4/UDP/fragment/port/payload/ramp filtering.",
+                12, MUTED, false), 8);
+        freezeHistoryList = column();
+        add(card, freezeHistoryList, 12);
+        refreshFreezeHistory();
+        return card;
+    }
+
+    private void refreshFreezeHistory() {
+        if (freezeHistoryList == null || freezeHistory == null) return;
+        freezeHistoryList.removeAllViews();
+        java.util.List<FreezeHistoryStore.Record> records = freezeHistory.history();
+        if (records.isEmpty()) {
+            add(freezeHistoryList, text("No completed Freeze cycles yet.", 12, MUTED, false), 0);
+            return;
+        }
+        SimpleDateFormat time = new SimpleDateFormat("HH:mm:ss", Locale.getDefault());
+        int index = 1;
+        for (FreezeHistoryStore.Record record : records) {
+            String heading = "#" + index + "  " + time.format(new Date(record.startedAtMillis))
+                    + "  •  " + record.source;
+            add(freezeHistoryList, text(heading, 13, TEXT, true), index == 1 ? 0 : 12);
+            add(freezeHistoryList, text(
+                    "Arrived " + record.arrived
+                            + "  •  Frozen " + record.frozen
+                            + "  •  Dropped " + record.dropped
+                            + "  •  Released " + record.released,
+                    12, MUTED, false), 4);
+            if (record.evicted > 0) {
+                add(freezeHistoryList, text("Queue evicted: " + record.evicted, 11, MUTED, false), 3);
+            }
+            index++;
+        }
+    }
+
     private LinearLayout inputRow() {
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -299,11 +346,7 @@ public final class GreatMainActivity extends Activity {
 
     private void savePayloadRange() {
         boolean randomEnabled = payloadRandomSwitch != null && payloadRandomSwitch.isChecked();
-        if (randomEnabled) {
-            saveRandomPayloadRange();
-        } else {
-            saveFixedPayloadRange();
-        }
+        if (randomEnabled) saveRandomPayloadRange(); else saveFixedPayloadRange();
     }
 
     private void saveFixedPayloadRange() {
@@ -311,20 +354,9 @@ public final class GreatMainActivity extends Activity {
         Integer min = parseRequired(payloadMinInput, "Minimum is required");
         Integer max = parseRequired(payloadMaxInput, "Maximum is required");
         if (min == null || max == null) return;
-
-        if (min < FreezeCore.MIN_PAYLOAD_LIMIT) {
-            payloadMinInput.setError("Minimum must be at least 20 bytes");
-            return;
-        }
-        if (max > FreezeCore.MAX_PAYLOAD_LIMIT) {
-            payloadMaxInput.setError("Maximum must not exceed 500 bytes");
-            return;
-        }
-        if (min >= max) {
-            payloadMinInput.setError("Minimum must be less than maximum");
-            return;
-        }
-
+        if (min < FreezeCore.MIN_PAYLOAD_LIMIT) { payloadMinInput.setError("Minimum must be at least 20 bytes"); return; }
+        if (max > FreezeCore.MAX_PAYLOAD_LIMIT) { payloadMaxInput.setError("Maximum must not exceed 500 bytes"); return; }
+        if (min >= max) { payloadMinInput.setError("Minimum must be less than maximum"); return; }
         capabilitySettings.setFreezePayloadRange(min, max);
         capabilitySettings.setFreezePayloadRandomEnabled(false);
         FreezeCore core = GreatEngine.instance().freezeCore();
@@ -336,34 +368,16 @@ public final class GreatMainActivity extends Activity {
     private void saveRandomPayloadRange() {
         if (payloadMinFromInput == null || payloadMinToInput == null
                 || payloadMaxFromInput == null || payloadMaxToInput == null) return;
-
         Integer minFrom = parseRequired(payloadMinFromInput, "Min From is required");
         Integer minTo = parseRequired(payloadMinToInput, "Min To is required");
         Integer maxFrom = parseRequired(payloadMaxFromInput, "Max From is required");
         Integer maxTo = parseRequired(payloadMaxToInput, "Max To is required");
         if (minFrom == null || minTo == null || maxFrom == null || maxTo == null) return;
-
-        if (minFrom < FreezeCore.MIN_PAYLOAD_LIMIT) {
-            payloadMinFromInput.setError("Min From must be at least 20 bytes");
-            return;
-        }
-        if (maxTo > FreezeCore.MAX_PAYLOAD_LIMIT) {
-            payloadMaxToInput.setError("Max To must not exceed 500 bytes");
-            return;
-        }
-        if (minFrom > minTo) {
-            payloadMinFromInput.setError("Min From must be ≤ Min To");
-            return;
-        }
-        if (maxFrom > maxTo) {
-            payloadMaxFromInput.setError("Max From must be ≤ Max To");
-            return;
-        }
-        if (minTo >= maxFrom) {
-            payloadMinToInput.setError("Min To must be less than Max From");
-            return;
-        }
-
+        if (minFrom < FreezeCore.MIN_PAYLOAD_LIMIT) { payloadMinFromInput.setError("Min From must be at least 20 bytes"); return; }
+        if (maxTo > FreezeCore.MAX_PAYLOAD_LIMIT) { payloadMaxToInput.setError("Max To must not exceed 500 bytes"); return; }
+        if (minFrom > minTo) { payloadMinFromInput.setError("Min From must be ≤ Min To"); return; }
+        if (maxFrom > maxTo) { payloadMaxFromInput.setError("Max From must be ≤ Max To"); return; }
+        if (minTo >= maxFrom) { payloadMinToInput.setError("Min To must be less than Max From"); return; }
         capabilitySettings.setFreezePayloadRandomRange(minFrom, minTo, maxFrom, maxTo);
         capabilitySettings.setFreezePayloadRandomEnabled(true);
         FreezeCore core = GreatEngine.instance().freezeCore();
@@ -374,16 +388,9 @@ public final class GreatMainActivity extends Activity {
 
     private Integer parseRequired(EditText input, String emptyMessage) {
         String value = input.getText().toString().trim();
-        if (value.isEmpty()) {
-            input.setError(emptyMessage);
-            return null;
-        }
-        try {
-            return Integer.parseInt(value);
-        } catch (NumberFormatException e) {
-            input.setError("Enter a valid number");
-            return null;
-        }
+        if (value.isEmpty()) { input.setError(emptyMessage); return null; }
+        try { return Integer.parseInt(value); }
+        catch (NumberFormatException e) { input.setError("Enter a valid number"); return null; }
     }
 
     private View robotTimeoutCard() {
@@ -391,18 +398,15 @@ public final class GreatMainActivity extends Activity {
         add(card, text("ROBOT MAX FREEZE", 11, ACCENT, true), 0);
         add(card, text("After this limit, robot Freeze stops and cannot fire again until white returns and re-arms it.",
                 12, MUTED, false), 8);
-
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-
         TextView minus = smallButton("−");
         robotTimeoutValue = text(formatRobotTimeout(), 18, TEXT, true);
         robotTimeoutValue.setGravity(Gravity.CENTER);
         TextView plus = smallButton("+");
         minus.setOnClickListener(v -> adjustRobotTimeout(-1));
         plus.setOnClickListener(v -> adjustRobotTimeout(1));
-
         row.addView(minus, new LinearLayout.LayoutParams(dp(54), dp(48)));
         row.addView(robotTimeoutValue, new LinearLayout.LayoutParams(0, dp(48), 1f));
         row.addView(plus, new LinearLayout.LayoutParams(dp(54), dp(48)));
@@ -437,7 +441,6 @@ public final class GreatMainActivity extends Activity {
         targetHeading.setGravity(Gravity.CENTER_VERTICAL);
         add(card, targetHeading, 0);
         add(card, text("Required for Freeze. Tap to add or remove package names.", 12, MUTED, false), 4);
-
         LinearLayout editor = column();
         editor.setVisibility(View.GONE);
         packageInput = new EditText(this);
@@ -447,7 +450,6 @@ public final class GreatMainActivity extends Activity {
         packageInput.setHint("com.dts.freefireth");
         packageInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         add(editor, packageInput, 12);
-
         TextView addButton = button("ADD APPLICATION", true);
         addButton.setOnClickListener(v -> addTarget());
         add(editor, addButton, 10);
@@ -470,13 +472,9 @@ public final class GreatMainActivity extends Activity {
     }
 
     private void requestVpn() {
-        if (!new SecureConfigStore(this).exists()) {
-            toast("Import an AmneziaWG .conf file first");
-            return;
-        }
+        if (!new SecureConfigStore(this).exists()) { toast("Import an AmneziaWG .conf file first"); return; }
         Intent permission = VpnService.prepare(this);
-        if (permission != null) startActivityForResult(permission, VPN_PERMISSION);
-        else startGreat();
+        if (permission != null) startActivityForResult(permission, VPN_PERMISSION); else startGreat();
     }
 
     private void startGreat() {
@@ -506,16 +504,13 @@ public final class GreatMainActivity extends Activity {
     }
 
     private void showControlOverlay() {
-        startService(new Intent(this, CapabilityOverlayService.class)
-                .setAction(CapabilityOverlayService.ACTION_SHOW));
+        startService(new Intent(this, CapabilityOverlayService.class).setAction(CapabilityOverlayService.ACTION_SHOW));
     }
 
     private void hideControlOverlay() {
-        startService(new Intent(this, CapabilityOverlayService.class)
-                .setAction(CapabilityOverlayService.ACTION_HIDE));
+        startService(new Intent(this, CapabilityOverlayService.class).setAction(CapabilityOverlayService.ACTION_HIDE));
     }
 
-    /** SHOW CIRCLES establishes MediaProjection immediately but leaves robot monitoring OFF/gray. */
     private void ensureMonitorSessionForCircles() {
         if (FreezeMonitorService.isRunning()) return;
         monitorSettings.setMonitoringEnabled(false);
@@ -524,7 +519,6 @@ public final class GreatMainActivity extends Activity {
         launchCapturePrompt();
     }
 
-    /** Used by the robot itself when capture was not prepared yet. */
     private void requestMonitorCapture(boolean startActive, boolean editAfterStart) {
         monitorEditAfterStart = editAfterStart;
         monitorStartActiveAfterCapture = startActive;
@@ -545,24 +539,18 @@ public final class GreatMainActivity extends Activity {
     }
 
     private void launchCapturePrompt() {
-        if (projectionManager == null) {
-            toast("Screen capture is unavailable");
-            return;
-        }
+        if (projectionManager == null) { toast("Screen capture is unavailable"); return; }
         Intent captureIntent;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             MediaProjectionConfig config = MediaProjectionConfig.createConfigForDefaultDisplay();
             captureIntent = projectionManager.createScreenCaptureIntent(config);
-        } else {
-            captureIntent = projectionManager.createScreenCaptureIntent();
-        }
+        } else captureIntent = projectionManager.createScreenCaptureIntent();
         startActivityForResult(captureIntent, MONITOR_CAPTURE);
     }
 
     private void chooseConfig() {
         startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT)
-                .addCategory(Intent.CATEGORY_OPENABLE)
-                .setType("*/*"), PICK_CONFIG);
+                .addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"), PICK_CONFIG);
     }
 
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
@@ -580,17 +568,12 @@ public final class GreatMainActivity extends Activity {
                     handler.postDelayed(() -> startService(new Intent(this, FreezeMonitorService.class)
                             .setAction(FreezeMonitorService.ACTION_EDIT)), 450);
                 }
-            } else {
-                toast("Screen capture permission is required for the monitor");
-            }
+            } else toast("Screen capture permission is required for the monitor");
             monitorEditAfterStart = false;
             monitorStartActiveAfterCapture = false;
             return;
         }
-        if (requestCode == VPN_PERMISSION && resultCode == RESULT_OK) {
-            startGreat();
-            return;
-        }
+        if (requestCode == VPN_PERMISSION && resultCode == RESULT_OK) { startGreat(); return; }
         if (requestCode == PICK_CONFIG && resultCode == RESULT_OK && data != null && data.getData() != null) {
             importConfig(data.getData());
         }
@@ -614,8 +597,7 @@ public final class GreatMainActivity extends Activity {
 
     private void refreshConfig() {
         boolean ready = new SecureConfigStore(this).exists();
-        if (configState != null) configState.setText(
-                ready ? "Configuration ready" : "Import an AmneziaWG .conf file");
+        if (configState != null) configState.setText(ready ? "Configuration ready" : "Import an AmneziaWG .conf file");
     }
 
     private void addTarget() {
@@ -623,9 +605,7 @@ public final class GreatMainActivity extends Activity {
             targetStore.add(packageInput.getText().toString());
             packageInput.setText("");
             refreshTargets();
-        } catch (IllegalArgumentException e) {
-            packageInput.setError(e.getMessage());
-        }
+        } catch (IllegalArgumentException e) { packageInput.setError(e.getMessage()); }
     }
 
     private void refreshTargets() {
@@ -644,10 +624,7 @@ public final class GreatMainActivity extends Activity {
             TextView remove = text("Remove", 13, ACCENT, true);
             remove.setMinHeight(dp(48));
             remove.setGravity(Gravity.CENTER);
-            remove.setOnClickListener(v -> {
-                targetStore.remove(name);
-                refreshTargets();
-            });
+            remove.setOnClickListener(v -> { targetStore.remove(name); refreshTargets(); });
             row.addView(remove, new LinearLayout.LayoutParams(-2, -2));
             add(targetList, row, 4);
         }
@@ -710,13 +687,9 @@ public final class GreatMainActivity extends Activity {
         parent.addView(child, p);
     }
 
-    private int dp(int value) {
-        return Math.round(value * getResources().getDisplayMetrics().density);
-    }
+    private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
 
-    private void toast(String message) {
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
-    }
+    private void toast(String message) { Toast.makeText(this, message, Toast.LENGTH_LONG).show(); }
 
     private static byte[] readBounded(InputStream input, int max) throws Exception {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
