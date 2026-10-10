@@ -1,5 +1,7 @@
 package com.great.app.monitor;
 
+import com.great.app.core.GreatEngine;
+
 import java.util.ArrayDeque;
 
 /**
@@ -118,7 +120,11 @@ public final class PixelTriggerMonitorEngine {
 
     private void setState(State next) {
         if (state == next) return;
+        State previous = state;
         state = next;
+        if (previous == State.FIRED && next == State.ARMED) {
+            GreatEngine.instance().freezeCore().startOutboundThrottleFromRobotWhiteReturn();
+        }
         if (listener != null) listener.onStateChanged(next);
     }
 
