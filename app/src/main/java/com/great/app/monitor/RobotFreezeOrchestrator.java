@@ -43,7 +43,6 @@ public final class RobotFreezeOrchestrator {
     private RobotFreezeOrchestrator(Random rng) { this.rng = rng; }
     public static RobotFreezeOrchestrator instance() { return INSTANCE; }
 
-    /** Safe to call repeatedly; scheduling begins once and keeps checking Robot state. */
     public void ensureStarted() {
         synchronized (lock) {
             if (started) return;
@@ -52,7 +51,7 @@ public final class RobotFreezeOrchestrator {
         }
     }
 
-    /** Called when a real white-loss cycle is about to request Robot Freeze. */
+    /** 25% of white-loss Robot cycles are ignored completely. */
     public boolean allowVisualFreeze() {
         synchronized (lock) {
             visualCycleBusy = true;
@@ -61,12 +60,23 @@ public final class RobotFreezeOrchestrator {
         }
     }
 
-    /** Keeps the random periodic cycle from overlapping a white-loss cycle, even if Freeze was skipped. */
     public void finishVisualCycle(boolean freezeActuallyRan) {
         synchronized (lock) { visualCycleBusy = false; }
-        if (freezeActuallyRan) {
-            GlobalRobotOutboundThrottle.instance().finishFreezeAndStartPostThrottle();
+        GlobalRobotOutboundThrottle throttle = GlobalRobotOutboundThrottle.instance();
+        // If the existing monitor safety timeout already ended the hold, the throttle hot path
+        // has already converted LIGHT into POST_FREEZE. Do not restart that post phase on white return.
+        if (freezeActuallyRan && throttle.lightActive()) {
+            throttle.finishFreezeAndStartPostThrottle();
         }
+    }
+
+    public void resetVisualCycle() {
+        boolean periodic;
+        synchronized (lock) {
+            visualCycleBusy = false;
+            periodic = periodicFreezeActive;
+        }
+        if (!periodic) GlobalRobotOutboundThrottle.instance().cancelActiveCycle();
     }
 
     /** Start light throttling only after FreezeCore has actually entered Robot hold. */
@@ -97,6 +107,7 @@ public final class RobotFreezeOrchestrator {
                         && !periodicFreezeActive
                         && !manualFreeze
                         && !engine.freezeCore().holdTriggerActive();
+                // 25% of periodic Robot attempts are ignored too.
                 if (eligible && rng.nextInt(100) >= FREEZE_SKIP_PERCENT) {
                     periodicFreezeActive = true;
                     durationMs = randomInclusiveLocked(MIN_PERIODIC_FREEZE_MS, MAX_PERIODIC_FREEZE_MS);
