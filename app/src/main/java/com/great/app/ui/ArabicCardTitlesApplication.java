@@ -16,11 +16,11 @@ public final class ArabicCardTitlesApplication extends Application {
                 if (!(activity instanceof GreatMainActivity)) return;
                 View root = activity.getWindow().getDecorView();
                 ReleaseTuningUi.prepare(activity, root);
-                VpnConfigDeleteUi.ensureDeleteControl(activity, root);
+                ConfigManagementUi.ensure(activity, root);
                 translateTree(root);
                 root.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
                     ReleaseTuningUi.ensureCard(activity, root);
-                    VpnConfigDeleteUi.ensureDeleteControl(activity, root);
+                    ConfigManagementUi.ensure(activity, root);
                     translateTree(root);
                 });
             }
