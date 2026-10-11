@@ -18,10 +18,31 @@ public final class ReleaseSettingsStore {
     private static final String DELAY_MIN_MS = "delay_min_ms";
     private static final String DELAY_MAX_MS = "delay_max_ms";
 
+    public static final int DEFAULT_DROP_MIN_PERCENT = 15;
+    public static final int DEFAULT_DROP_MAX_PERCENT = 35;
+    public static final int DEFAULT_BURST_MIN = 2;
+    public static final int DEFAULT_BURST_MAX = 5;
+    public static final int DEFAULT_DELAY_MIN_MS = 25;
+    public static final int DEFAULT_DELAY_MAX_MS = 75;
+
     private final SharedPreferences prefs;
 
     public ReleaseSettingsStore(Context context) {
         prefs = context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        SharedPreferences.Editor editor = null;
+        if (!prefs.contains(DROP_MIN) || !prefs.contains(DROP_MAX)) {
+            editor = prefs.edit().putInt(DROP_MIN, DEFAULT_DROP_MIN_PERCENT)
+                    .putInt(DROP_MAX, DEFAULT_DROP_MAX_PERCENT);
+        }
+        if (!prefs.contains(BURST_MIN) || !prefs.contains(BURST_MAX)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(BURST_MIN, DEFAULT_BURST_MIN).putInt(BURST_MAX, DEFAULT_BURST_MAX);
+        }
+        if (!prefs.contains(DELAY_MIN_MS) || !prefs.contains(DELAY_MAX_MS)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(DELAY_MIN_MS, DEFAULT_DELAY_MIN_MS).putInt(DELAY_MAX_MS, DEFAULT_DELAY_MAX_MS);
+        }
+        if (editor != null) editor.apply();
     }
 
     public boolean dropEnabled() { return prefs.getBoolean(DROP_ENABLED, true); }
@@ -37,27 +58,27 @@ public final class ReleaseSettingsStore {
     public boolean hasDelayRange() { return prefs.contains(DELAY_MIN_MS) && prefs.contains(DELAY_MAX_MS); }
 
     public int dropMinPercent() {
-        return validDropRange(rawDropMin(), rawDropMax()) ? rawDropMin() : FreezeCore.DEFAULT_RELEASE_DROP_MIN_PERCENT;
+        return validDropRange(rawDropMin(), rawDropMax()) ? rawDropMin() : DEFAULT_DROP_MIN_PERCENT;
     }
 
     public int dropMaxPercent() {
-        return validDropRange(rawDropMin(), rawDropMax()) ? rawDropMax() : FreezeCore.DEFAULT_RELEASE_DROP_MAX_PERCENT;
+        return validDropRange(rawDropMin(), rawDropMax()) ? rawDropMax() : DEFAULT_DROP_MAX_PERCENT;
     }
 
     public int burstMin() {
-        return validBurstRange(rawBurstMin(), rawBurstMax()) ? rawBurstMin() : FreezeCore.DEFAULT_RELEASE_BURST_MIN;
+        return validBurstRange(rawBurstMin(), rawBurstMax()) ? rawBurstMin() : DEFAULT_BURST_MIN;
     }
 
     public int burstMax() {
-        return validBurstRange(rawBurstMin(), rawBurstMax()) ? rawBurstMax() : FreezeCore.DEFAULT_RELEASE_BURST_MAX;
+        return validBurstRange(rawBurstMin(), rawBurstMax()) ? rawBurstMax() : DEFAULT_BURST_MAX;
     }
 
     public int delayMinMs() {
-        return validDelayRange(rawDelayMin(), rawDelayMax()) ? rawDelayMin() : FreezeCore.DEFAULT_RELEASE_DELAY_MIN_MS;
+        return validDelayRange(rawDelayMin(), rawDelayMax()) ? rawDelayMin() : DEFAULT_DELAY_MIN_MS;
     }
 
     public int delayMaxMs() {
-        return validDelayRange(rawDelayMin(), rawDelayMax()) ? rawDelayMax() : FreezeCore.DEFAULT_RELEASE_DELAY_MAX_MS;
+        return validDelayRange(rawDelayMin(), rawDelayMax()) ? rawDelayMax() : DEFAULT_DELAY_MAX_MS;
     }
 
     public void setDropRange(int min, int max) {
@@ -75,12 +96,12 @@ public final class ReleaseSettingsStore {
         prefs.edit().putInt(DELAY_MIN_MS, min).putInt(DELAY_MAX_MS, max).apply();
     }
 
-    private int rawDropMin() { return prefs.getInt(DROP_MIN, FreezeCore.DEFAULT_RELEASE_DROP_MIN_PERCENT); }
-    private int rawDropMax() { return prefs.getInt(DROP_MAX, FreezeCore.DEFAULT_RELEASE_DROP_MAX_PERCENT); }
-    private int rawBurstMin() { return prefs.getInt(BURST_MIN, FreezeCore.DEFAULT_RELEASE_BURST_MIN); }
-    private int rawBurstMax() { return prefs.getInt(BURST_MAX, FreezeCore.DEFAULT_RELEASE_BURST_MAX); }
-    private int rawDelayMin() { return prefs.getInt(DELAY_MIN_MS, FreezeCore.DEFAULT_RELEASE_DELAY_MIN_MS); }
-    private int rawDelayMax() { return prefs.getInt(DELAY_MAX_MS, FreezeCore.DEFAULT_RELEASE_DELAY_MAX_MS); }
+    private int rawDropMin() { return prefs.getInt(DROP_MIN, DEFAULT_DROP_MIN_PERCENT); }
+    private int rawDropMax() { return prefs.getInt(DROP_MAX, DEFAULT_DROP_MAX_PERCENT); }
+    private int rawBurstMin() { return prefs.getInt(BURST_MIN, DEFAULT_BURST_MIN); }
+    private int rawBurstMax() { return prefs.getInt(BURST_MAX, DEFAULT_BURST_MAX); }
+    private int rawDelayMin() { return prefs.getInt(DELAY_MIN_MS, DEFAULT_DELAY_MIN_MS); }
+    private int rawDelayMax() { return prefs.getInt(DELAY_MAX_MS, DEFAULT_DELAY_MAX_MS); }
 
     private static boolean validDropRange(int min, int max) {
         return min >= FreezeCore.MIN_RELEASE_DROP_LIMIT_PERCENT
