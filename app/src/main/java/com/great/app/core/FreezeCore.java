@@ -86,12 +86,18 @@ public final class FreezeCore implements AutoCloseable {
     public static final int OUTBOUND_THROTTLE_WINDOW_MS = 300;
     public static final int OUTBOUND_THROTTLE_MAX_DELAY_MS = 100;
 
-    private static final int MIN_RELEASE_BURST = 1;
-    private static final int MAX_RELEASE_BURST = 4;
-    private static final int MIN_RELEASE_DELAY_MS = 30;
-    private static final int MAX_RELEASE_DELAY_MS = 100;
-    private static final int MIN_RELEASE_DROP_PERCENT = 15;
-    private static final int MAX_RELEASE_DROP_PERCENT = 33;
+    public static final int DEFAULT_RELEASE_BURST_MIN = 1;
+    public static final int DEFAULT_RELEASE_BURST_MAX = 4;
+    public static final int DEFAULT_RELEASE_DELAY_MIN_MS = 30;
+    public static final int DEFAULT_RELEASE_DELAY_MAX_MS = 100;
+    public static final int DEFAULT_RELEASE_DROP_MIN_PERCENT = 15;
+    public static final int DEFAULT_RELEASE_DROP_MAX_PERCENT = 33;
+    public static final int MIN_RELEASE_BURST_LIMIT = 1;
+    public static final int MAX_RELEASE_BURST_LIMIT = 100;
+    public static final int MIN_RELEASE_DELAY_LIMIT_MS = 0;
+    public static final int MAX_RELEASE_DELAY_LIMIT_MS = 5000;
+    public static final int MIN_RELEASE_DROP_LIMIT_PERCENT = 0;
+    public static final int MAX_RELEASE_DROP_LIMIT_PERCENT = 100;
 
     private static final int MIN_RAMP_DURATION_MS = 70;
     private static final int MAX_RAMP_DURATION_MS = 130;
@@ -128,6 +134,16 @@ public final class FreezeCore implements AutoCloseable {
     private int randomPayloadMinTo = DEFAULT_RANDOM_PAYLOAD_MIN_TO;
     private int randomPayloadMaxFrom = DEFAULT_RANDOM_PAYLOAD_MAX_FROM;
     private int randomPayloadMaxTo = DEFAULT_RANDOM_PAYLOAD_MAX_TO;
+
+    private volatile boolean releaseDropEnabled = true;
+    private volatile boolean releaseBurstEnabled = true;
+    private volatile boolean releaseDelayEnabled = true;
+    private volatile int releaseDropMinPercent = DEFAULT_RELEASE_DROP_MIN_PERCENT;
+    private volatile int releaseDropMaxPercent = DEFAULT_RELEASE_DROP_MAX_PERCENT;
+    private volatile int releaseBurstMin = DEFAULT_RELEASE_BURST_MIN;
+    private volatile int releaseBurstMax = DEFAULT_RELEASE_BURST_MAX;
+    private volatile int releaseDelayMinMs = DEFAULT_RELEASE_DELAY_MIN_MS;
+    private volatile int releaseDelayMaxMs = DEFAULT_RELEASE_DELAY_MAX_MS;
 
     private boolean outboundThrottleEnabled;
     private long outboundThrottleStartedNanos;
@@ -299,6 +315,37 @@ public final class FreezeCore implements AutoCloseable {
     public int payloadMin() { synchronized (lock) { return payloadMin; } }
     public int payloadMax() { synchronized (lock) { return payloadMax; } }
 
+    public void setReleaseDropEnabled(boolean enabled) { releaseDropEnabled = enabled; }
+    public void setReleaseBurstEnabled(boolean enabled) { releaseBurstEnabled = enabled; }
+    public void setReleaseDelayEnabled(boolean enabled) { releaseDelayEnabled = enabled; }
+
+    public void setReleaseDropRange(int minPercent, int maxPercent) {
+        if (minPercent < MIN_RELEASE_DROP_LIMIT_PERCENT
+                || maxPercent > MAX_RELEASE_DROP_LIMIT_PERCENT || minPercent > maxPercent) {
+            throw new IllegalArgumentException("Release drop range must be 0..100% and min must be <= max");
+        }
+        releaseDropMinPercent = minPercent;
+        releaseDropMaxPercent = maxPercent;
+    }
+
+    public void setReleaseBurstRange(int minBurst, int maxBurst) {
+        if (minBurst < MIN_RELEASE_BURST_LIMIT
+                || maxBurst > MAX_RELEASE_BURST_LIMIT || minBurst > maxBurst) {
+            throw new IllegalArgumentException("Release burst range must be 1..100 packets and min must be <= max");
+        }
+        releaseBurstMin = minBurst;
+        releaseBurstMax = maxBurst;
+    }
+
+    public void setReleaseDelayRangeMs(int minMs, int maxMs) {
+        if (minMs < MIN_RELEASE_DELAY_LIMIT_MS
+                || maxMs > MAX_RELEASE_DELAY_LIMIT_MS || minMs > maxMs) {
+            throw new IllegalArgumentException("Release delay range must be 0..5000 ms and min must be <= max");
+        }
+        releaseDelayMinMs = minMs;
+        releaseDelayMaxMs = maxMs;
+    }
+
     public void setOutboundThrottleEnabled(boolean enabled) {
         synchronized (lock) {
             outboundThrottleEnabled = enabled;
@@ -429,6 +476,7 @@ public final class FreezeCore implements AutoCloseable {
     }
 
     private int randomInclusiveLocked(int from, int to) { return from == to ? from : from + rng.nextInt(to - from + 1); }
+    private int randomInclusive(int from, int to) { return from == to ? from : from + rng.nextInt(to - from + 1); }
 
     private static boolean validRandomPayloadRange(int minFrom, int minTo, int maxFrom, int maxTo) {
         return minFrom >= MIN_PAYLOAD_LIMIT && minFrom <= minTo && minTo < maxFrom
@@ -509,9 +557,18 @@ public final class FreezeCore implements AutoCloseable {
     private void release(CycleWork work, long session) {
         ArrayList<PacketEnvelope> all = work.packets;
         int[] traceIds = work.heldTraceIds;
+        boolean dropEnabled = releaseDropEnabled;
+        boolean burstEnabled = releaseBurstEnabled;
+        boolean delayEnabled = releaseDelayEnabled;
+        int dropMin = releaseDropMinPercent;
+        int dropMax = releaseDropMaxPercent;
+        int burstMin = releaseBurstMin;
+        int burstMax = releaseBurstMax;
+        int delayMin = releaseDelayMinMs;
+        int delayMax = releaseDelayMaxMs;
         try {
             if (!all.isEmpty()) {
-                int dropPercent = MIN_RELEASE_DROP_PERCENT + rng.nextInt(MAX_RELEASE_DROP_PERCENT - MIN_RELEASE_DROP_PERCENT + 1);
+                int dropPercent = dropEnabled ? randomInclusive(dropMin, dropMax) : 0;
                 int dropCount = Math.round(all.size() * (dropPercent / 100f));
                 dropCount = Math.max(0, Math.min(dropCount, all.size()));
                 work.dropped = dropCount;
@@ -540,7 +597,7 @@ public final class FreezeCore implements AutoCloseable {
                 }
                 int index = 0;
                 while (index < all.size()) {
-                    int burstSize = MIN_RELEASE_BURST + rng.nextInt(MAX_RELEASE_BURST - MIN_RELEASE_BURST + 1);
+                    int burstSize = burstEnabled ? randomInclusive(burstMin, burstMax) : (all.size() - index);
                     int burstEnd = Math.min(all.size(), index + burstSize);
                     while (index < burstEnd) {
                         OutputSink output;
@@ -556,10 +613,12 @@ public final class FreezeCore implements AutoCloseable {
                         } catch (Exception e) { return; }
                         index++;
                     }
-                    if (index < all.size()) {
-                        int delayMs = MIN_RELEASE_DELAY_MS + rng.nextInt(MAX_RELEASE_DELAY_MS - MIN_RELEASE_DELAY_MS + 1);
-                        try { Thread.sleep(delayMs); }
-                        catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                    if (index < all.size() && delayEnabled) {
+                        int delayMs = randomInclusive(delayMin, delayMax);
+                        if (delayMs > 0) {
+                            try { Thread.sleep(delayMs); }
+                            catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                        }
                     }
                 }
             }
