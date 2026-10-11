@@ -5,10 +5,9 @@ import android.app.Application;
 import android.os.Bundle;
 import android.view.View;
 import android.view.ViewGroup;
-import android.view.ViewTreeObserver;
 import android.widget.TextView;
 
-/** Keeps only the main control-card headings in Arabic while leaving card contents unchanged. */
+/** Keeps the main control-card headings in Arabic and prepares supplemental tuning UI. */
 public final class ArabicCardTitlesApplication extends Application {
     @Override public void onCreate() {
         super.onCreate();
@@ -16,9 +15,12 @@ public final class ArabicCardTitlesApplication extends Application {
             @Override public void onActivityResumed(Activity activity) {
                 if (!(activity instanceof GreatMainActivity)) return;
                 View root = activity.getWindow().getDecorView();
+                ReleaseTuningUi.prepare(activity, root);
                 translateTree(root);
-                root.getViewTreeObserver().addOnGlobalLayoutListener(
-                        () -> translateTree(root));
+                root.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+                    ReleaseTuningUi.ensureCard(activity, root);
+                    translateTree(root);
+                });
             }
 
             @Override public void onActivityCreated(Activity activity, Bundle state) { }
