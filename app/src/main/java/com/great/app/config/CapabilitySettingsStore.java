@@ -29,10 +29,56 @@ public final class CapabilitySettingsStore {
     private static final String ROBOT_LIGHT_DURATION_MIN_MS = "robot_light_duration_min_ms";
     private static final String ROBOT_LIGHT_DURATION_MAX_MS = "robot_light_duration_max_ms";
 
+    public static final int DEFAULT_RANDOM_PAYLOAD_MIN_FROM = 14;
+    public static final int DEFAULT_RANDOM_PAYLOAD_MIN_TO = 15;
+    public static final int DEFAULT_RANDOM_PAYLOAD_MAX_FROM = 45;
+    public static final int DEFAULT_RANDOM_PAYLOAD_MAX_TO = 55;
+    public static final int DEFAULT_LIGHT_START_MIN_MS = 30;
+    public static final int DEFAULT_LIGHT_START_MAX_MS = 60;
+    public static final int DEFAULT_LIGHT_DURATION_MIN_MS = 250;
+    public static final int DEFAULT_LIGHT_DURATION_MAX_MS = 500;
+    public static final int DEFAULT_WHITE_RETURN_START_MIN_MS = 75;
+    public static final int DEFAULT_WHITE_RETURN_START_MAX_MS = 100;
+    public static final int DEFAULT_WHITE_RETURN_DURATION_MIN_MS = 250;
+    public static final int DEFAULT_WHITE_RETURN_DURATION_MAX_MS = 500;
+
     private final SharedPreferences prefs;
 
     public CapabilitySettingsStore(Context context) {
         prefs = context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        seedFirstRunDefaults();
+    }
+
+    private void seedFirstRunDefaults() {
+        SharedPreferences.Editor editor = null;
+        if (!prefs.contains(FREEZE_PAYLOAD_RANDOM_ENABLED)) {
+            editor = prefs.edit().putBoolean(FREEZE_PAYLOAD_RANDOM_ENABLED, true);
+        }
+        if (!prefs.contains(FREEZE_PAYLOAD_MIN_FROM) || !prefs.contains(FREEZE_PAYLOAD_MIN_TO)
+                || !prefs.contains(FREEZE_PAYLOAD_MAX_FROM) || !prefs.contains(FREEZE_PAYLOAD_MAX_TO)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(FREEZE_PAYLOAD_MIN_FROM, DEFAULT_RANDOM_PAYLOAD_MIN_FROM)
+                    .putInt(FREEZE_PAYLOAD_MIN_TO, DEFAULT_RANDOM_PAYLOAD_MIN_TO)
+                    .putInt(FREEZE_PAYLOAD_MAX_FROM, DEFAULT_RANDOM_PAYLOAD_MAX_FROM)
+                    .putInt(FREEZE_PAYLOAD_MAX_TO, DEFAULT_RANDOM_PAYLOAD_MAX_TO);
+        }
+        if (!prefs.contains(ROBOT_LIGHT_START_MIN_MS) || !prefs.contains(ROBOT_LIGHT_START_MAX_MS)
+                || !prefs.contains(ROBOT_LIGHT_DURATION_MIN_MS) || !prefs.contains(ROBOT_LIGHT_DURATION_MAX_MS)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(ROBOT_LIGHT_START_MIN_MS, DEFAULT_LIGHT_START_MIN_MS)
+                    .putInt(ROBOT_LIGHT_START_MAX_MS, DEFAULT_LIGHT_START_MAX_MS)
+                    .putInt(ROBOT_LIGHT_DURATION_MIN_MS, DEFAULT_LIGHT_DURATION_MIN_MS)
+                    .putInt(ROBOT_LIGHT_DURATION_MAX_MS, DEFAULT_LIGHT_DURATION_MAX_MS);
+        }
+        if (!prefs.contains(ROBOT_WHITE_RETURN_START_MIN_MS) || !prefs.contains(ROBOT_WHITE_RETURN_START_MAX_MS)
+                || !prefs.contains(ROBOT_WHITE_RETURN_DURATION_MIN_MS) || !prefs.contains(ROBOT_WHITE_RETURN_DURATION_MAX_MS)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(ROBOT_WHITE_RETURN_START_MIN_MS, DEFAULT_WHITE_RETURN_START_MIN_MS)
+                    .putInt(ROBOT_WHITE_RETURN_START_MAX_MS, DEFAULT_WHITE_RETURN_START_MAX_MS)
+                    .putInt(ROBOT_WHITE_RETURN_DURATION_MIN_MS, DEFAULT_WHITE_RETURN_DURATION_MIN_MS)
+                    .putInt(ROBOT_WHITE_RETURN_DURATION_MAX_MS, DEFAULT_WHITE_RETURN_DURATION_MAX_MS);
+        }
+        if (editor != null) editor.apply();
     }
 
     public int freezeSeconds() {
@@ -70,7 +116,7 @@ public final class CapabilitySettingsStore {
     }
 
     public boolean freezePayloadRandomEnabled() {
-        return prefs.getBoolean(FREEZE_PAYLOAD_RANDOM_ENABLED, false);
+        return prefs.getBoolean(FREEZE_PAYLOAD_RANDOM_ENABLED, true);
     }
 
     public void setFreezePayloadRandomEnabled(boolean enabled) {
@@ -159,57 +205,37 @@ public final class CapabilitySettingsStore {
     }
 
     private int[] robotWhiteReturnRange() {
-        int startMin = prefs.getInt(ROBOT_WHITE_RETURN_START_MIN_MS,
-                GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_START_MIN_MS);
-        int startMax = prefs.getInt(ROBOT_WHITE_RETURN_START_MAX_MS,
-                GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_START_MAX_MS);
-        int durationMin = prefs.getInt(ROBOT_WHITE_RETURN_DURATION_MIN_MS,
-                GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_DURATION_MIN_MS);
-        int durationMax = prefs.getInt(ROBOT_WHITE_RETURN_DURATION_MAX_MS,
-                GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_DURATION_MAX_MS);
+        int startMin = prefs.getInt(ROBOT_WHITE_RETURN_START_MIN_MS, DEFAULT_WHITE_RETURN_START_MIN_MS);
+        int startMax = prefs.getInt(ROBOT_WHITE_RETURN_START_MAX_MS, DEFAULT_WHITE_RETURN_START_MAX_MS);
+        int durationMin = prefs.getInt(ROBOT_WHITE_RETURN_DURATION_MIN_MS, DEFAULT_WHITE_RETURN_DURATION_MIN_MS);
+        int durationMax = prefs.getInt(ROBOT_WHITE_RETURN_DURATION_MAX_MS, DEFAULT_WHITE_RETURN_DURATION_MAX_MS);
         if (!GlobalRobotOutboundThrottle.validVisualPostRange(startMin, startMax, durationMin, durationMax)) {
-            return new int[]{
-                    GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_START_MIN_MS,
-                    GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_START_MAX_MS,
-                    GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_DURATION_MIN_MS,
-                    GlobalRobotOutboundThrottle.DEFAULT_VISUAL_POST_DURATION_MAX_MS
-            };
+            return new int[]{DEFAULT_WHITE_RETURN_START_MIN_MS, DEFAULT_WHITE_RETURN_START_MAX_MS,
+                    DEFAULT_WHITE_RETURN_DURATION_MIN_MS, DEFAULT_WHITE_RETURN_DURATION_MAX_MS};
         }
         return new int[]{startMin, startMax, durationMin, durationMax};
     }
 
     private int[] robotLightRange() {
-        int startMin = prefs.getInt(ROBOT_LIGHT_START_MIN_MS,
-                GlobalRobotOutboundThrottle.DEFAULT_LIGHT_START_MIN_MS);
-        int startMax = prefs.getInt(ROBOT_LIGHT_START_MAX_MS,
-                GlobalRobotOutboundThrottle.DEFAULT_LIGHT_START_MAX_MS);
-        int durationMin = prefs.getInt(ROBOT_LIGHT_DURATION_MIN_MS,
-                GlobalRobotOutboundThrottle.DEFAULT_LIGHT_DURATION_MIN_MS);
-        int durationMax = prefs.getInt(ROBOT_LIGHT_DURATION_MAX_MS,
-                GlobalRobotOutboundThrottle.DEFAULT_LIGHT_DURATION_MAX_MS);
+        int startMin = prefs.getInt(ROBOT_LIGHT_START_MIN_MS, DEFAULT_LIGHT_START_MIN_MS);
+        int startMax = prefs.getInt(ROBOT_LIGHT_START_MAX_MS, DEFAULT_LIGHT_START_MAX_MS);
+        int durationMin = prefs.getInt(ROBOT_LIGHT_DURATION_MIN_MS, DEFAULT_LIGHT_DURATION_MIN_MS);
+        int durationMax = prefs.getInt(ROBOT_LIGHT_DURATION_MAX_MS, DEFAULT_LIGHT_DURATION_MAX_MS);
         if (!GlobalRobotOutboundThrottle.validLightRange(startMin, startMax, durationMin, durationMax)) {
-            return new int[]{
-                    GlobalRobotOutboundThrottle.DEFAULT_LIGHT_START_MIN_MS,
-                    GlobalRobotOutboundThrottle.DEFAULT_LIGHT_START_MAX_MS,
-                    GlobalRobotOutboundThrottle.DEFAULT_LIGHT_DURATION_MIN_MS,
-                    GlobalRobotOutboundThrottle.DEFAULT_LIGHT_DURATION_MAX_MS
-            };
+            return new int[]{DEFAULT_LIGHT_START_MIN_MS, DEFAULT_LIGHT_START_MAX_MS,
+                    DEFAULT_LIGHT_DURATION_MIN_MS, DEFAULT_LIGHT_DURATION_MAX_MS};
         }
         return new int[]{startMin, startMax, durationMin, durationMax};
     }
 
     private int[] randomPayloadRange() {
-        int minFrom = prefs.getInt(FREEZE_PAYLOAD_MIN_FROM, FreezeCore.DEFAULT_RANDOM_PAYLOAD_MIN_FROM);
-        int minTo = prefs.getInt(FREEZE_PAYLOAD_MIN_TO, FreezeCore.DEFAULT_RANDOM_PAYLOAD_MIN_TO);
-        int maxFrom = prefs.getInt(FREEZE_PAYLOAD_MAX_FROM, FreezeCore.DEFAULT_RANDOM_PAYLOAD_MAX_FROM);
-        int maxTo = prefs.getInt(FREEZE_PAYLOAD_MAX_TO, FreezeCore.DEFAULT_RANDOM_PAYLOAD_MAX_TO);
+        int minFrom = prefs.getInt(FREEZE_PAYLOAD_MIN_FROM, DEFAULT_RANDOM_PAYLOAD_MIN_FROM);
+        int minTo = prefs.getInt(FREEZE_PAYLOAD_MIN_TO, DEFAULT_RANDOM_PAYLOAD_MIN_TO);
+        int maxFrom = prefs.getInt(FREEZE_PAYLOAD_MAX_FROM, DEFAULT_RANDOM_PAYLOAD_MAX_FROM);
+        int maxTo = prefs.getInt(FREEZE_PAYLOAD_MAX_TO, DEFAULT_RANDOM_PAYLOAD_MAX_TO);
         if (!validRandomPayloadRange(minFrom, minTo, maxFrom, maxTo)) {
-            return new int[]{
-                    FreezeCore.DEFAULT_RANDOM_PAYLOAD_MIN_FROM,
-                    FreezeCore.DEFAULT_RANDOM_PAYLOAD_MIN_TO,
-                    FreezeCore.DEFAULT_RANDOM_PAYLOAD_MAX_FROM,
-                    FreezeCore.DEFAULT_RANDOM_PAYLOAD_MAX_TO
-            };
+            return new int[]{DEFAULT_RANDOM_PAYLOAD_MIN_FROM, DEFAULT_RANDOM_PAYLOAD_MIN_TO,
+                    DEFAULT_RANDOM_PAYLOAD_MAX_FROM, DEFAULT_RANDOM_PAYLOAD_MAX_TO};
         }
         return new int[]{minFrom, minTo, maxFrom, maxTo};
     }
