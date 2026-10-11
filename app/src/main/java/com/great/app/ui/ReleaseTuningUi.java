@@ -17,9 +17,11 @@ import android.widget.Switch;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.great.app.config.CapabilitySettingsStore;
 import com.great.app.config.ReleaseSettingsStore;
 import com.great.app.core.FreezeCore;
 import com.great.app.core.GreatEngine;
+import com.great.app.transport.GlobalRobotOutboundThrottle;
 
 import java.util.WeakHashMap;
 
@@ -30,12 +32,14 @@ final class ReleaseTuningUi {
     private static final int MUTED = 0xffa2aabc;
     private static final int ACCENT = 0xffb89aff;
     private static final String CARD_TAG = "great_gradual_release_card";
+    private static final String CAPABILITY_PREFS = "great_capability_settings";
     private static final WeakHashMap<Activity, Boolean> PREPARED = new WeakHashMap<>();
 
     private ReleaseTuningUi() { }
 
     static void prepare(Activity activity, View decorRoot) {
         applyReleaseSettings(activity);
+        configureLightThrottleSave(activity, decorRoot);
         if (Boolean.TRUE.equals(PREPARED.get(activity))) {
             ensureCard(activity, decorRoot);
             return;
@@ -78,6 +82,98 @@ final class ReleaseTuningUi {
         core.setReleaseDropRange(store.dropMinPercent(), store.dropMaxPercent());
         core.setReleaseBurstRange(store.burstMin(), store.burstMax());
         core.setReleaseDelayRangeMs(store.delayMinMs(), store.delayMaxMs());
+    }
+
+    private static void configureLightThrottleSave(Activity activity, View root) {
+        View card = findContainingView(root, "ROBOT LIGHT OUTBOUND THROTTLE");
+        if (card == null) card = findContainingView(root, "الخنق الخفيف بالتوازي مع التجميد");
+        if (card == null) return;
+
+        EditText startMinInput = findEditTextByHint(card, "Min Start Delay");
+        EditText startMaxInput = findEditTextByHint(card, "Max Start Delay");
+        EditText durationMinInput = findEditTextByHint(card, "Min Duration");
+        EditText durationMaxInput = findEditTextByHint(card, "Max Duration");
+        Switch whiteReturn = findSwitchByLabel(card, "STOP ON WHITE RETURN");
+        TextView save = findTextView(card, "SAVE LIGHT THROTTLE");
+        if (startMinInput == null || startMaxInput == null || durationMinInput == null
+                || durationMaxInput == null || whiteReturn == null || save == null) return;
+
+        save.setOnClickListener(v -> saveLightThrottle(activity, startMinInput, startMaxInput,
+                durationMinInput, durationMaxInput, whiteReturn.isChecked()));
+    }
+
+    private static void saveLightThrottle(Activity activity,
+                                          EditText startMinInput, EditText startMaxInput,
+                                          EditText durationMinInput, EditText durationMaxInput,
+                                          boolean stopOnWhiteReturn) {
+        Integer startMin = parseRequired(startMinInput, "Minimum start delay is required");
+        Integer startMax = parseRequired(startMaxInput, "Maximum start delay is required");
+        if (startMin == null || startMax == null) return;
+
+        int low = GlobalRobotOutboundThrottle.MIN_CONFIGURABLE_LIGHT_MS;
+        int high = GlobalRobotOutboundThrottle.MAX_CONFIGURABLE_LIGHT_MS;
+        if (!validateRange(startMinInput, startMaxInput, startMin, startMax, low, high, "ms")) return;
+
+        String durationMinText = durationMinInput.getText().toString().trim();
+        String durationMaxText = durationMaxInput.getText().toString().trim();
+        boolean bothDurationEmpty = durationMinText.isEmpty() && durationMaxText.isEmpty();
+
+        CapabilitySettingsStore settings = new CapabilitySettingsStore(activity);
+        GlobalRobotOutboundThrottle throttle = GlobalRobotOutboundThrottle.instance();
+
+        if (stopOnWhiteReturn && bothDurationEmpty) {
+            activity.getSharedPreferences(CAPABILITY_PREFS, Context.MODE_PRIVATE).edit()
+                    .putInt("robot_light_start_min_ms", startMin)
+                    .putInt("robot_light_start_max_ms", startMax)
+                    .apply();
+            throttle.setLightRange(startMin, startMax,
+                    settings.robotLightDurationMinMs(), settings.robotLightDurationMaxMs());
+            Toast.makeText(activity,
+                    "Light throttle saved; Duration is ignored until white-return link is disabled",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        Integer durationMin = parseRequired(durationMinInput, "Minimum duration is required");
+        Integer durationMax = parseRequired(durationMaxInput, "Maximum duration is required");
+        if (durationMin == null || durationMax == null) return;
+        if (!validateRange(durationMinInput, durationMaxInput,
+                durationMin, durationMax, low, high, "ms")) return;
+
+        settings.setRobotLightThrottleRange(startMin, startMax, durationMin, durationMax);
+        throttle.setLightRange(startMin, startMax, durationMin, durationMax);
+        Toast.makeText(activity, "Robot light throttle ranges saved", Toast.LENGTH_LONG).show();
+    }
+
+    private static boolean validateRange(EditText minInput, EditText maxInput,
+                                         int min, int max, int low, int high, String unit) {
+        if (min < low || min > high) {
+            minInput.setError("Allowed: " + low + ".." + high + " " + unit);
+            return false;
+        }
+        if (max < low || max > high) {
+            maxInput.setError("Allowed: " + low + ".." + high + " " + unit);
+            return false;
+        }
+        if (min > max) {
+            minInput.setError("Minimum must be ≤ maximum");
+            return false;
+        }
+        return true;
+    }
+
+    private static Integer parseRequired(EditText input, String message) {
+        String text = input.getText().toString().trim();
+        if (text.isEmpty()) {
+            input.setError(message);
+            return null;
+        }
+        try {
+            return Integer.parseInt(text);
+        } catch (NumberFormatException e) {
+            input.setError("Enter a valid number");
+            return null;
+        }
     }
 
     private static View buildCard(Activity activity) {
@@ -197,25 +293,27 @@ final class ReleaseTuningUi {
     }
 
     private static void blankFirstUseNumericFields(Activity activity, View root) {
-        SharedPreferences prefs = activity.getSharedPreferences("great_capability_settings", Context.MODE_PRIVATE);
+        SharedPreferences prefs = activity.getSharedPreferences(CAPABILITY_PREFS, Context.MODE_PRIVATE);
         boolean fixedPayloadSaved = prefs.contains("freeze_payload_min") && prefs.contains("freeze_payload_max");
         boolean randomPayloadSaved = prefs.contains("freeze_payload_min_from")
                 && prefs.contains("freeze_payload_min_to")
                 && prefs.contains("freeze_payload_max_from")
                 && prefs.contains("freeze_payload_max_to");
-        boolean lightSaved = prefs.contains("robot_light_start_min_ms")
-                && prefs.contains("robot_light_start_max_ms")
-                && prefs.contains("robot_light_duration_min_ms")
+        boolean lightStartSaved = prefs.contains("robot_light_start_min_ms")
+                && prefs.contains("robot_light_start_max_ms");
+        boolean lightDurationSaved = prefs.contains("robot_light_duration_min_ms")
                 && prefs.contains("robot_light_duration_max_ms");
         boolean postSaved = prefs.contains("robot_white_return_start_min_ms")
                 && prefs.contains("robot_white_return_start_max_ms")
                 && prefs.contains("robot_white_return_duration_min_ms")
                 && prefs.contains("robot_white_return_duration_max_ms");
-        blankRecursive(root, fixedPayloadSaved, randomPayloadSaved, lightSaved, postSaved);
+        blankRecursive(root, fixedPayloadSaved, randomPayloadSaved,
+                lightStartSaved, lightDurationSaved, postSaved);
     }
 
     private static void blankRecursive(View view, boolean fixedPayloadSaved, boolean randomPayloadSaved,
-                                       boolean lightSaved, boolean postSaved) {
+                                       boolean lightStartSaved, boolean lightDurationSaved,
+                                       boolean postSaved) {
         if (view instanceof EditText) {
             EditText input = (EditText) view;
             CharSequence hintValue = input.getHint();
@@ -225,9 +323,10 @@ final class ReleaseTuningUi {
             } else if (!randomPayloadSaved && ("Min From".equals(hint) || "Min To".equals(hint)
                     || "Max From".equals(hint) || "Max To".equals(hint))) {
                 input.setText("");
-            } else if (!lightSaved && ("Min Start Delay".equals(hint) || "Max Start Delay".equals(hint)
-                    || (("Min Duration".equals(hint) || "Max Duration".equals(hint))
-                    && insideCard(input, "ROBOT LIGHT OUTBOUND THROTTLE")))) {
+            } else if (!lightStartSaved && ("Min Start Delay".equals(hint) || "Max Start Delay".equals(hint))) {
+                input.setText("");
+            } else if (!lightDurationSaved && ("Min Duration".equals(hint) || "Max Duration".equals(hint))
+                    && insideCard(input, "ROBOT LIGHT OUTBOUND THROTTLE")) {
                 input.setText("");
             } else if (!postSaved && ("Min Start".equals(hint) || "Max Start".equals(hint)
                     || (("Min Duration".equals(hint) || "Max Duration".equals(hint))
@@ -238,8 +337,75 @@ final class ReleaseTuningUi {
         if (!(view instanceof ViewGroup)) return;
         ViewGroup group = (ViewGroup) view;
         for (int i = 0; i < group.getChildCount(); i++) {
-            blankRecursive(group.getChildAt(i), fixedPayloadSaved, randomPayloadSaved, lightSaved, postSaved);
+            blankRecursive(group.getChildAt(i), fixedPayloadSaved, randomPayloadSaved,
+                    lightStartSaved, lightDurationSaved, postSaved);
         }
+    }
+
+    private static View findContainingView(View view, String expected) {
+        if (!(view instanceof ViewGroup)) return null;
+        ViewGroup group = (ViewGroup) view;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View child = group.getChildAt(i);
+            if (containsText(child, expected)) return child;
+            View nested = findContainingView(child, expected);
+            if (nested != null) return nested;
+        }
+        return null;
+    }
+
+    private static EditText findEditTextByHint(View view, String expectedHint) {
+        if (view instanceof EditText) {
+            CharSequence hint = ((EditText) view).getHint();
+            if (hint != null && expectedHint.equals(hint.toString())) return (EditText) view;
+        }
+        if (!(view instanceof ViewGroup)) return null;
+        ViewGroup group = (ViewGroup) view;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            EditText found = findEditTextByHint(group.getChildAt(i), expectedHint);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static TextView findTextView(View view, String expected) {
+        if (view instanceof TextView) {
+            CharSequence text = ((TextView) view).getText();
+            if (text != null && expected.equals(text.toString())) return (TextView) view;
+        }
+        if (!(view instanceof ViewGroup)) return null;
+        ViewGroup group = (ViewGroup) view;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            TextView found = findTextView(group.getChildAt(i), expected);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static Switch findSwitchByLabel(View view, String label) {
+        if (!(view instanceof ViewGroup)) return null;
+        ViewGroup group = (ViewGroup) view;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View child = group.getChildAt(i);
+            if (child instanceof ViewGroup && containsText(child, label)) {
+                Switch found = findFirstSwitch(child);
+                if (found != null) return found;
+            }
+            Switch nested = findSwitchByLabel(child, label);
+            if (nested != null) return nested;
+        }
+        return null;
+    }
+
+    private static Switch findFirstSwitch(View view) {
+        if (view instanceof Switch) return (Switch) view;
+        if (!(view instanceof ViewGroup)) return null;
+        ViewGroup group = (ViewGroup) view;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            Switch found = findFirstSwitch(group.getChildAt(i));
+            if (found != null) return found;
+        }
+        return null;
     }
 
     private static boolean insideCard(View view, String title) {
