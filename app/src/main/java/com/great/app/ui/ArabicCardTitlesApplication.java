@@ -16,11 +16,11 @@ public final class ArabicCardTitlesApplication extends Application {
                 if (!(activity instanceof GreatMainActivity)) return;
                 View root = activity.getWindow().getDecorView();
                 ReleaseTuningUi.prepare(activity, root);
-                ConfigManagementUi.ensure(activity, root);
+                VpnConfigDeleteUi.ensureDeleteControl(activity, root);
                 translateTree(root);
                 root.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
                     ReleaseTuningUi.ensureCard(activity, root);
-                    ConfigManagementUi.ensure(activity, root);
+                    VpnConfigDeleteUi.ensureDeleteControl(activity, root);
                     translateTree(root);
                 });
             }
@@ -61,6 +61,18 @@ public final class ArabicCardTitlesApplication extends Application {
         else if ("ROBOT MAX FREEZE".equals(text)) translated = "الحد الأقصى لمدة تجميد الروبوت";
         else if ("SHOW CIRCLES".equals(text)) translated = "إظهار الدوائر";
         else if ("HIDE CIRCLES".equals(text)) translated = "إخفاء الدوائر";
+        else if ("المسموح: 0–100%   •   Min ≤ Max   •   الحالي الافتراضي 15–33%".equals(text)) {
+            translated = "المسموح: 0–100%   •   Min ≤ Max   •   الافتراضي 15–35%";
+        }
+        else if ("المسموح: 1–100 حزمة   •   Min ≤ Max   •   الحالي الافتراضي 1–4".equals(text)) {
+            translated = "المسموح: 1–100 حزمة   •   Min ≤ Max   •   الافتراضي 2–5";
+        }
+        else if ("المسموح: 0–5000 ms   •   Min ≤ Max   •   الحالي الافتراضي 30–100 ms".equals(text)) {
+            translated = "المسموح: 0–5000 ms   •   Min ≤ Max   •   الافتراضي 25–75 ms";
+        }
+        else if (text.startsWith("الحقول الرقمية تظهر فارغة أول مرة.")) {
+            translated = "تظهر القيم الافتراضية في أول تشغيل، وأي قيم تحفظها لاحقًا تصبح هي القيم المستخدمة.";
+        }
 
         if (translated != null && !translated.equals(text)) view.setText(translated);
     }
