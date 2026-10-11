@@ -70,6 +70,11 @@ public final class SecureConfigStore {
         }
     }
 
+    /** Removes the encrypted stored config. The reusable Android Keystore key is intentionally kept. */
+    public synchronized void delete() {
+        file().delete();
+    }
+
     private AtomicFile file() { return new AtomicFile(new File(context.getNoBackupFilesDir(), "awg.conf.aesgcm")); }
 
     private SecretKey key() throws Exception {
