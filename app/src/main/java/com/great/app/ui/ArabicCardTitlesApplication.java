@@ -22,13 +22,16 @@ public final class ArabicCardTitlesApplication extends Application {
                     translateTree(root);
                     ComfortSettingsUi.ensure(activity, root);
                 }
+                TargetAppsEditorUi.ensure(root);
                 root.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
-                    if (ComfortSettingsUi.isInstalled(root)) return;
-                    ReleaseTuningUi.ensureCard(activity, root);
-                    FreezeEntryTuningUi.ensure(activity, root);
-                    ConfigManagementUi.ensure(activity, root);
-                    translateTree(root);
-                    ComfortSettingsUi.ensure(activity, root);
+                    if (!ComfortSettingsUi.isInstalled(root)) {
+                        ReleaseTuningUi.ensureCard(activity, root);
+                        FreezeEntryTuningUi.ensure(activity, root);
+                        ConfigManagementUi.ensure(activity, root);
+                        translateTree(root);
+                        ComfortSettingsUi.ensure(activity, root);
+                    }
+                    TargetAppsEditorUi.ensure(root);
                 });
             }
 
