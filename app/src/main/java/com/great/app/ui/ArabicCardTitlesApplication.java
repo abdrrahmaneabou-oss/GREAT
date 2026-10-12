@@ -7,7 +7,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
-/** Keeps the main control-card headings in Arabic and prepares supplemental tuning UI. */
+/** Keeps the control surface localized, prepares tuning cards, then presents the compact dashboard. */
 public final class ArabicCardTitlesApplication extends Application {
     @Override public void onCreate() {
         super.onCreate();
@@ -19,11 +19,13 @@ public final class ArabicCardTitlesApplication extends Application {
                 FreezeEntryTuningUi.ensure(activity, root);
                 ConfigManagementUi.ensure(activity, root);
                 translateTree(root);
+                GeniusDashboardUi.ensure(activity, root);
                 root.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
                     ReleaseTuningUi.ensureCard(activity, root);
                     FreezeEntryTuningUi.ensure(activity, root);
                     ConfigManagementUi.ensure(activity, root);
                     translateTree(root);
+                    GeniusDashboardUi.ensure(activity, root);
                 });
             }
 
