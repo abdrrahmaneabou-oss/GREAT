@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit;
 public final class RobotFreezeOrchestrator {
     public static final int DEFAULT_FREEZE_SKIP_PERCENT = 25;
     public static final int MIN_FREEZE_SKIP_PERCENT = 0;
-    public static final int MAX_FREEZE_SKIP_PERCENT = 25;
+    public static final int MAX_FREEZE_SKIP_PERCENT = 100;
     /** Kept for source compatibility; runtime behavior uses the configurable skipPercent field. */
     @Deprecated public static final int FREEZE_SKIP_PERCENT = DEFAULT_FREEZE_SKIP_PERCENT;
 
@@ -52,7 +52,7 @@ public final class RobotFreezeOrchestrator {
 
     public void setSkipPercent(int percent) {
         if (percent < MIN_FREEZE_SKIP_PERCENT || percent > MAX_FREEZE_SKIP_PERCENT) {
-            throw new IllegalArgumentException("Robot skip must be 0..25%");
+            throw new IllegalArgumentException("Robot skip must be 0..100%");
         }
         synchronized (lock) { freezeSkipPercent = percent; }
     }
@@ -83,8 +83,6 @@ public final class RobotFreezeOrchestrator {
     public void finishVisualCycle(boolean freezeActuallyRan) {
         synchronized (lock) { visualCycleBusy = false; }
         if (freezeActuallyRan) {
-            // White return always terminates light throttling immediately, even if its duration mode
-            // would otherwise still be active. Post-Freeze throttling remains controlled separately.
             GlobalRobotOutboundThrottle.instance().finishVisualFreezeAndStartPostThrottle();
         }
     }
@@ -112,7 +110,6 @@ public final class RobotFreezeOrchestrator {
         synchronized (lock) {
             long now = System.nanoTime();
             if (!FreezeMonitorService.isMonitoringActive()) {
-                // When Robot is re-enabled, it always gets a fresh full 30..60 second interval.
                 nextPeriodicAtNanos = 0L;
                 return;
             }
@@ -124,8 +121,6 @@ public final class RobotFreezeOrchestrator {
             }
             if (now < nextPeriodicAtNanos) return;
 
-            // Every deadline immediately receives a new independent 30..60 s deadline, whether
-            // this particular cycle runs or is skipped by the configured rule / another active Freeze.
             nextPeriodicAtNanos = now + TimeUnit.MILLISECONDS.toNanos(
                     randomInclusiveLocked(MIN_PERIODIC_INTERVAL_MS, MAX_PERIODIC_INTERVAL_MS));
 
@@ -160,7 +155,6 @@ public final class RobotFreezeOrchestrator {
         }
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
         if (FreezeMonitorService.isMonitoringActive()) {
-            // Periodic post-Freeze throttle keeps its fixed profile and ignores the visual post card.
             GlobalRobotOutboundThrottle.instance().finishPeriodicFreezeAndStartPostThrottle();
         } else {
             GlobalRobotOutboundThrottle.instance().cancelActiveCycle();

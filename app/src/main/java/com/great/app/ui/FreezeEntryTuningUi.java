@@ -15,7 +15,6 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.great.app.config.FreezeEntrySettingsStore;
-import com.great.app.core.FreezeCore;
 import com.great.app.core.GreatEngine;
 import com.great.app.monitor.RobotFreezeOrchestrator;
 
@@ -25,6 +24,8 @@ final class FreezeEntryTuningUi {
     private static final int TEXT = 0xfff2f3fa;
     private static final int MUTED = 0xffa2aabc;
     private static final int ACCENT = 0xffb89aff;
+    private static final int ENABLED_BG = 0xff2f6b4f;
+    private static final int DISABLED_BG = 0xff593743;
     private static final String RAMP_TAG = "great_freeze_entry_ramp_card";
     private static final String SKIP_TAG = "great_robot_skip_card";
 
@@ -55,10 +56,16 @@ final class FreezeEntryTuningUi {
     }
 
     private static void apply(FreezeEntrySettingsStore store) {
-        GreatEngine.instance().freezeCore().setRampProfile(
-                store.rampDurationMinMs(), store.rampDurationMaxMs(),
-                store.rampStage1MinPercent(), store.rampStage1MaxPercent(),
-                store.rampStage2MinPercent(), store.rampStage2MaxPercent());
+        if (store.rampEnabled()) {
+            GreatEngine.instance().freezeCore().setRampProfile(
+                    store.rampDurationMinMs(), store.rampDurationMaxMs(),
+                    store.rampStage1MinPercent(), store.rampStage1MaxPercent(),
+                    store.rampStage2MinPercent(), store.rampStage2MaxPercent());
+        } else {
+            // A zero-duration ramp makes rampAllowsHold() pass immediately, so matching packets
+            // enter the normal 100% Freeze path while preserving the user's saved ramp profile.
+            GreatEngine.instance().freezeCore().setRampProfile(0, 0, 100, 100, 100, 100);
+        }
         RobotFreezeOrchestrator.instance().setSkipPercent(store.robotSkipPercent());
     }
 
@@ -66,8 +73,21 @@ final class FreezeEntryTuningUi {
         LinearLayout card = card(activity);
         add(activity, card, text(activity, "تدرّج الدخول إلى Freeze", 11, ACCENT, true), 0);
         add(activity, card, text(activity,
-                "يتحكم في سرعة وقوة الانتقال إلى التجميد. أثناء مدة Ramp يستخدم التطبيق مرحلتين لاحتمال حجز الحزم، وبعد انتهاء المدة يصبح الحجز 100% للحزم المطابقة.",
+                "يتحكم في سرعة وقوة الانتقال إلى التجميد. يمكنك تعطيل التدرّج بالكامل؛ عندها يبدأ Freeze مباشرة بنسبة حجز 100% للحزم المطابقة.",
                 12, MUTED, false), 8);
+
+        TextView rampToggle = button(activity, "");
+        updateRampToggle(activity, rampToggle, store.rampEnabled());
+        rampToggle.setOnClickListener(v -> {
+            boolean enabled = !store.rampEnabled();
+            store.setRampEnabled(enabled);
+            apply(store);
+            updateRampToggle(activity, rampToggle, enabled);
+            Toast.makeText(activity,
+                    enabled ? "Freeze entry ramp enabled" : "Freeze entry ramp disabled",
+                    Toast.LENGTH_SHORT).show();
+        });
+        add(activity, card, rampToggle, 14);
 
         add(activity, card, text(activity, "مدة Ramp • ms", 11, ACCENT, true), 16);
         EditText durationMin = numeric(activity, "Min ms", store.rampDurationMinMs());
@@ -106,11 +126,16 @@ final class FreezeEntryTuningUi {
         return card;
     }
 
+    private static void updateRampToggle(Activity activity, TextView view, boolean enabled) {
+        view.setText(enabled ? "التدرّج: تشغيل" : "التدرّج: إيقاف");
+        view.setBackground(round(activity, enabled ? ENABLED_BG : DISABLED_BG, 16));
+    }
+
     private static View robotSkipCard(Activity activity, FreezeEntrySettingsStore store) {
         LinearLayout card = card(activity);
         add(activity, card, text(activity, "نسبة تجاهل Robot", 11, ACCENT, true), 0);
         add(activity, card, text(activity,
-                "تحدد احتمال تجاهل محاولة Robot بالكامل. النطاق 0% إلى 25%. إذا لم تحفظ أي قيمة فالسلوك يبقى 25% كما كان سابقًا.",
+                "تحدد احتمال تجاهل محاولة Robot بالكامل. النطاق 0% إلى 100%. إذا لم تحفظ أي قيمة فالسلوك يبقى 25% كما كان سابقًا.",
                 12, MUTED, false), 8);
 
         TextView value = text(activity, store.robotSkipPercent() + "%", 22, TEXT, true);

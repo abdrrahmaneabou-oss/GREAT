@@ -15,9 +15,9 @@ import android.os.Looper;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.MotionEvent;
-import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.FrameLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -30,7 +30,7 @@ import com.great.app.core.GreatEngine;
 import java.util.Map;
 import java.util.TreeMap;
 
-/** Two floating capability controls plus a compact, resizable latest-cycle packet summary. */
+/** Two floating capability controls plus a compact latest-cycle packet summary. */
 public final class CapabilityOverlayService extends Service {
     public static final String ACTION_SHOW = "com.great.app.action.SHOW_CAPABILITIES";
     public static final String ACTION_HIDE = "com.great.app.action.HIDE_CAPABILITIES";
@@ -42,10 +42,12 @@ public final class CapabilityOverlayService extends Service {
     private static final String KEY_FREEZE_Y = "freeze_y";
     private static final String KEY_SUMMARY_X = "packet_summary_x";
     private static final String KEY_SUMMARY_Y = "packet_summary_y";
+    private static final String KEY_SUMMARY_COLLAPSED = "packet_summary_collapsed";
     private static final int ACTIVE = 0xffef5350;
     private static final int INACTIVE = 0xff7b808c;
     private static final int EDITING = 0xffffc107;
     private static final int SIZE_DP = 58;
+    private static final int SUMMARY_CONTROL_DP = 28;
     private static final long LONG_PRESS_MS = 300L;
     private static final float SUMMARY_BASE_TEXT_SP = 13f;
 
@@ -54,6 +56,7 @@ public final class CapabilityOverlayService extends Service {
         @Override public void run() {
             renderStates();
             updatePacketSummary();
+            updateSummaryExpandPosition();
             if (robotView != null || freezeView != null || packetSummaryView != null) {
                 handler.postDelayed(this, 150);
             }
@@ -66,12 +69,17 @@ public final class CapabilityOverlayService extends Service {
     private FreezeEntrySettingsStore freezeEntrySettings;
     private TextView robotView;
     private TextView freezeView;
-    private TextView packetSummaryView;
+    private FrameLayout packetSummaryView;
+    private TextView packetSummaryText;
+    private TextView summaryCollapseView;
+    private TextView summaryResizeView;
+    private TextView summaryExpandView;
     private WindowManager.LayoutParams robotParams;
     private WindowManager.LayoutParams freezeParams;
     private WindowManager.LayoutParams packetSummaryParams;
-    private ScaleGestureDetector summaryScaleDetector;
+    private WindowManager.LayoutParams summaryExpandParams;
     private float summaryScale = FreezeEntrySettingsStore.DEFAULT_SUMMARY_SCALE;
+    private boolean summaryCollapsed;
     private long renderedSummaryCycle = Long.MIN_VALUE;
 
     @Override public void onCreate() {
@@ -81,6 +89,7 @@ public final class CapabilityOverlayService extends Service {
         monitorSettings = new MonitorSettingsStore(this);
         freezeEntrySettings = new FreezeEntrySettingsStore(this);
         summaryScale = freezeEntrySettings.summaryScale();
+        summaryCollapsed = prefs.getBoolean(KEY_SUMMARY_COLLAPSED, false);
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -118,14 +127,19 @@ public final class CapabilityOverlayService extends Service {
         packetSummaryParams = summaryParams(
                 prefs.getInt(KEY_SUMMARY_X, dp(18)),
                 prefs.getInt(KEY_SUMMARY_Y, dp(110)));
-        summaryScaleDetector = new ScaleGestureDetector(this, new SummaryScaleListener());
-        packetSummaryView.setOnTouchListener(new SummaryTouch());
+        packetSummaryView.setOnTouchListener(new SummaryMoveTouch());
         packetSummaryView.setVisibility(View.GONE);
         windowManager.addView(packetSummaryView, packetSummaryParams);
         applySummaryScale(false);
 
+        summaryExpandView = summaryExpandView();
+        summaryExpandParams = circleParams(0, 0, dp(SUMMARY_CONTROL_DP));
+        summaryExpandView.setVisibility(summaryCollapsed ? View.VISIBLE : View.GONE);
+        windowManager.addView(summaryExpandView, summaryExpandParams);
+
         clampAndUpdate(robotView, robotParams, KEY_ROBOT_X, KEY_ROBOT_Y, false);
         clampAndUpdate(freezeView, freezeParams, KEY_FREEZE_X, KEY_FREEZE_Y, false);
+        updateSummaryExpandPosition();
         renderStates();
         updatePacketSummary();
         handler.post(renderTick);
@@ -143,17 +157,69 @@ public final class CapabilityOverlayService extends Service {
         return view;
     }
 
-    private TextView packetSummaryView() {
+    private FrameLayout packetSummaryView() {
+        FrameLayout root = new FrameLayout(this);
+        root.setClickable(true);
+        root.setFocusable(false);
+
+        packetSummaryText = new TextView(this);
+        packetSummaryText.setTextColor(Color.WHITE);
+        packetSummaryText.setTypeface(android.graphics.Typeface.MONOSPACE);
+        packetSummaryText.setGravity(Gravity.START);
+        packetSummaryText.setIncludeFontPadding(false);
+        packetSummaryText.setSingleLine(false);
+        packetSummaryText.setLineSpacing(0f, 1.0f);
+        packetSummaryText.setClickable(false);
+        FrameLayout.LayoutParams textParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.START);
+        root.addView(packetSummaryText, textParams);
+
+        summaryCollapseView = summaryControl("−");
+        summaryCollapseView.setContentDescription("Hide packet summary");
+        summaryCollapseView.setOnClickListener(v -> collapseSummary());
+        FrameLayout.LayoutParams collapseParams = new FrameLayout.LayoutParams(
+                dp(SUMMARY_CONTROL_DP), dp(SUMMARY_CONTROL_DP), Gravity.TOP | Gravity.END);
+        root.addView(summaryCollapseView, collapseParams);
+
+        summaryResizeView = summaryControl("↘");
+        summaryResizeView.setContentDescription("Resize packet summary");
+        summaryResizeView.setOnTouchListener(new SummaryResizeTouch());
+        FrameLayout.LayoutParams resizeParams = new FrameLayout.LayoutParams(
+                dp(SUMMARY_CONTROL_DP), dp(SUMMARY_CONTROL_DP), Gravity.BOTTOM | Gravity.END);
+        root.addView(summaryResizeView, resizeParams);
+
+        return root;
+    }
+
+    private TextView summaryControl(String label) {
         TextView view = new TextView(this);
+        view.setText(label);
         view.setTextColor(Color.WHITE);
-        view.setTypeface(android.graphics.Typeface.MONOSPACE);
-        view.setGravity(Gravity.START);
+        view.setTextSize(18);
+        view.setGravity(Gravity.CENTER);
         view.setIncludeFontPadding(false);
-        view.setSingleLine(false);
-        view.setLineSpacing(0f, 1.0f);
+        view.setBackground(controlBg(0xb3262a35));
         view.setClickable(true);
         view.setFocusable(false);
         return view;
+    }
+
+    private TextView summaryExpandView() {
+        TextView view = summaryControl("+");
+        view.setTextSize(20);
+        view.setBackground(controlBg(0xee242833));
+        view.setContentDescription("Show packet summary");
+        view.setOnClickListener(v -> expandSummary());
+        return view;
+    }
+
+    private GradientDrawable controlBg(int color) {
+        GradientDrawable d = new GradientDrawable();
+        d.setShape(GradientDrawable.OVAL);
+        d.setColor(color);
+        d.setStroke(dp(1), 0x99ffffff);
+        return d;
     }
 
     private WindowManager.LayoutParams circleParams(int x, int y, int size) {
@@ -199,21 +265,23 @@ public final class CapabilityOverlayService extends Service {
     }
 
     private void updatePacketSummary() {
-        if (packetSummaryView == null || packetSummaryParams == null) return;
+        if (packetSummaryView == null || packetSummaryParams == null || packetSummaryText == null) return;
         FreezeCore.CycleStats stats = GreatEngine.instance().freezeCore().latestCycleStats();
         if (stats == null) return;
-        if (stats.startedAtMillis() == renderedSummaryCycle && packetSummaryView.getVisibility() == View.VISIBLE) return;
+        if (stats.startedAtMillis() == renderedSummaryCycle) return;
 
         String summary = buildPacketSummary(stats);
         renderedSummaryCycle = stats.startedAtMillis();
+        packetSummaryText.setText(summary);
         if (summary.isEmpty()) {
             packetSummaryView.setVisibility(View.GONE);
             return;
         }
-        packetSummaryView.setText(summary);
-        packetSummaryView.setVisibility(View.VISIBLE);
-        packetSummaryView.requestLayout();
-        packetSummaryView.post(this::clampSummaryToScreen);
+        if (!summaryCollapsed) {
+            packetSummaryView.setVisibility(View.VISIBLE);
+            packetSummaryView.requestLayout();
+            packetSummaryView.post(this::clampSummaryToScreen);
+        }
     }
 
     private static String buildPacketSummary(FreezeCore.CycleStats stats) {
@@ -247,11 +315,13 @@ public final class CapabilityOverlayService extends Service {
         summaryScale = clamp(summaryScale,
                 FreezeEntrySettingsStore.MIN_SUMMARY_SCALE,
                 FreezeEntrySettingsStore.MAX_SUMMARY_SCALE);
-        if (packetSummaryView != null) {
-            packetSummaryView.setTextSize(SUMMARY_BASE_TEXT_SP * summaryScale);
-            int horizontal = Math.max(1, Math.round(dp(6) * summaryScale));
-            int vertical = Math.max(1, Math.round(dp(4) * summaryScale));
+        if (packetSummaryView != null && packetSummaryText != null) {
+            packetSummaryText.setTextSize(SUMMARY_BASE_TEXT_SP * summaryScale);
+            int horizontal = Math.max(dp(4), Math.round(dp(6) * summaryScale));
+            int vertical = Math.max(dp(3), Math.round(dp(4) * summaryScale));
+            int controlRoom = dp(SUMMARY_CONTROL_DP);
             packetSummaryView.setPadding(horizontal, vertical, horizontal, vertical);
+            packetSummaryText.setPadding(0, controlRoom, controlRoom, controlRoom);
             GradientDrawable background = new GradientDrawable();
             background.setColor(0xd91a1d25);
             background.setCornerRadius(Math.max(1f, dp(7) * summaryScale));
@@ -261,6 +331,37 @@ public final class CapabilityOverlayService extends Service {
             packetSummaryView.post(this::clampSummaryToScreen);
         }
         if (persist) freezeEntrySettings.setSummaryScale(summaryScale);
+    }
+
+    private void collapseSummary() {
+        summaryCollapsed = true;
+        prefs.edit().putBoolean(KEY_SUMMARY_COLLAPSED, true).apply();
+        if (packetSummaryView != null) packetSummaryView.setVisibility(View.GONE);
+        if (summaryExpandView != null) summaryExpandView.setVisibility(View.VISIBLE);
+        updateSummaryExpandPosition();
+    }
+
+    private void expandSummary() {
+        summaryCollapsed = false;
+        prefs.edit().putBoolean(KEY_SUMMARY_COLLAPSED, false).apply();
+        if (summaryExpandView != null) summaryExpandView.setVisibility(View.GONE);
+        if (packetSummaryView != null && packetSummaryText != null
+                && packetSummaryText.getText() != null && packetSummaryText.length() > 0) {
+            packetSummaryView.setVisibility(View.VISIBLE);
+            packetSummaryView.requestLayout();
+            packetSummaryView.post(this::clampSummaryToScreen);
+        }
+    }
+
+    private void updateSummaryExpandPosition() {
+        if (summaryExpandView == null || summaryExpandParams == null || robotParams == null) return;
+        int size = Math.max(dp(SUMMARY_CONTROL_DP), summaryExpandParams.width);
+        Point screen = screenSize();
+        int targetX = robotParams.x + robotParams.width - size / 2;
+        int targetY = robotParams.y - size / 2;
+        summaryExpandParams.x = clamp(targetX, 0, Math.max(0, screen.x - size));
+        summaryExpandParams.y = clamp(targetY, 0, Math.max(0, screen.y - size));
+        try { windowManager.updateViewLayout(summaryExpandView, summaryExpandParams); } catch (Throwable ignored) { }
     }
 
     private void onRobotClick() {
@@ -357,14 +458,19 @@ public final class CapabilityOverlayService extends Service {
                         dragging = true;
                         cancelLongPress();
                     }
-                    if (dragging) move(view, p, startX + Math.round(dx), startY + Math.round(dy));
+                    if (dragging) {
+                        move(view, p, startX + Math.round(dx), startY + Math.round(dy));
+                        if (robot) updateSummaryExpandPosition();
+                    }
                     return true;
                 }
                 case MotionEvent.ACTION_UP -> {
                     cancelLongPress();
                     if (dragging) {
-                        if (robot) savePosition(p, KEY_ROBOT_X, KEY_ROBOT_Y);
-                        else savePosition(p, KEY_FREEZE_X, KEY_FREEZE_Y);
+                        if (robot) {
+                            savePosition(p, KEY_ROBOT_X, KEY_ROBOT_Y);
+                            updateSummaryExpandPosition();
+                        } else savePosition(p, KEY_FREEZE_X, KEY_FREEZE_Y);
                     } else if (!longPressed) {
                         if (robot) onRobotClick(); else onFreezeClick();
                     }
@@ -384,27 +490,13 @@ public final class CapabilityOverlayService extends Service {
         }
     }
 
-    private final class SummaryScaleListener extends ScaleGestureDetector.SimpleOnScaleGestureListener {
-        @Override public boolean onScale(ScaleGestureDetector detector) {
-            summaryScale *= detector.getScaleFactor();
-            applySummaryScale(false);
-            return true;
-        }
-
-        @Override public void onScaleEnd(ScaleGestureDetector detector) {
-            applySummaryScale(true);
-        }
-    }
-
-    private final class SummaryTouch implements View.OnTouchListener {
+    private final class SummaryMoveTouch implements View.OnTouchListener {
         private float downRawX, downRawY;
         private int startX, startY;
         private boolean dragging;
 
         @Override public boolean onTouch(View view, MotionEvent event) {
             if (packetSummaryParams == null) return false;
-            if (summaryScaleDetector != null) summaryScaleDetector.onTouchEvent(event);
-
             switch (event.getActionMasked()) {
                 case MotionEvent.ACTION_DOWN -> {
                     downRawX = event.getRawX();
@@ -414,12 +506,7 @@ public final class CapabilityOverlayService extends Service {
                     dragging = false;
                     return true;
                 }
-                case MotionEvent.ACTION_POINTER_DOWN -> {
-                    dragging = false;
-                    return true;
-                }
                 case MotionEvent.ACTION_MOVE -> {
-                    if (event.getPointerCount() != 1 || (summaryScaleDetector != null && summaryScaleDetector.isInProgress())) return true;
                     float dx = event.getRawX() - downRawX;
                     float dy = event.getRawY() - downRawY;
                     if (!dragging && Math.hypot(dx, dy) > dp(5)) dragging = true;
@@ -428,11 +515,39 @@ public final class CapabilityOverlayService extends Service {
                 }
                 case MotionEvent.ACTION_UP -> {
                     if (dragging) saveSummaryPosition();
-                    freezeEntrySettings.setSummaryScale(summaryScale);
                     return true;
                 }
-                case MotionEvent.ACTION_CANCEL -> {
-                    freezeEntrySettings.setSummaryScale(summaryScale);
+                case MotionEvent.ACTION_CANCEL -> { return true; }
+                default -> { return true; }
+            }
+        }
+    }
+
+    private final class SummaryResizeTouch implements View.OnTouchListener {
+        private float downRawX, downRawY;
+        private float startScale;
+
+        @Override public boolean onTouch(View view, MotionEvent event) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.getRawX();
+                    downRawY = event.getRawY();
+                    startScale = summaryScale;
+                    return true;
+                }
+                case MotionEvent.ACTION_MOVE -> {
+                    float dx = event.getRawX() - downRawX;
+                    float dy = event.getRawY() - downRawY;
+                    float delta = (dx + dy) * 0.5f;
+                    float factor = 1f + delta / Math.max(1f, dp(150));
+                    summaryScale = clamp(startScale * factor,
+                            FreezeEntrySettingsStore.MIN_SUMMARY_SCALE,
+                            FreezeEntrySettingsStore.MAX_SUMMARY_SCALE);
+                    applySummaryScale(false);
+                    return true;
+                }
+                case MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    applySummaryScale(true);
                     return true;
                 }
                 default -> { return true; }
@@ -497,13 +612,18 @@ public final class CapabilityOverlayService extends Service {
         if (robotView != null) try { windowManager.removeView(robotView); } catch (Throwable ignored) { }
         if (freezeView != null) try { windowManager.removeView(freezeView); } catch (Throwable ignored) { }
         if (packetSummaryView != null) try { windowManager.removeView(packetSummaryView); } catch (Throwable ignored) { }
+        if (summaryExpandView != null) try { windowManager.removeView(summaryExpandView); } catch (Throwable ignored) { }
         robotView = null;
         freezeView = null;
         packetSummaryView = null;
+        packetSummaryText = null;
+        summaryCollapseView = null;
+        summaryResizeView = null;
+        summaryExpandView = null;
         robotParams = null;
         freezeParams = null;
         packetSummaryParams = null;
-        summaryScaleDetector = null;
+        summaryExpandParams = null;
         renderedSummaryCycle = Long.MIN_VALUE;
     }
 

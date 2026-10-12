@@ -7,6 +7,7 @@ import android.content.SharedPreferences;
 public final class FreezeEntrySettingsStore {
     private static final String PREFS = "great_freeze_entry_tuning";
 
+    private static final String RAMP_ENABLED = "ramp_enabled";
     private static final String RAMP_DURATION_MIN_MS = "ramp_duration_min_ms";
     private static final String RAMP_DURATION_MAX_MS = "ramp_duration_max_ms";
     private static final String RAMP_STAGE1_MIN_PERCENT = "ramp_stage1_min_percent";
@@ -16,6 +17,7 @@ public final class FreezeEntrySettingsStore {
     private static final String ROBOT_SKIP_PERCENT = "robot_skip_percent";
     private static final String SUMMARY_SCALE = "summary_scale";
 
+    public static final boolean DEFAULT_RAMP_ENABLED = true;
     public static final int DEFAULT_RAMP_DURATION_MIN_MS = 70;
     public static final int DEFAULT_RAMP_DURATION_MAX_MS = 130;
     public static final int DEFAULT_RAMP_STAGE1_MIN_PERCENT = 20;
@@ -30,7 +32,7 @@ public final class FreezeEntrySettingsStore {
     public static final int MIN_HOLD_PERCENT = 0;
     public static final int MAX_HOLD_PERCENT = 100;
     public static final int MIN_ROBOT_SKIP_PERCENT = 0;
-    public static final int MAX_ROBOT_SKIP_PERCENT = 25;
+    public static final int MAX_ROBOT_SKIP_PERCENT = 100;
     public static final float MIN_SUMMARY_SCALE = 0.55f;
     public static final float MAX_SUMMARY_SCALE = 2.40f;
 
@@ -39,6 +41,9 @@ public final class FreezeEntrySettingsStore {
     public FreezeEntrySettingsStore(Context context) {
         prefs = context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
+
+    public boolean rampEnabled() { return prefs.getBoolean(RAMP_ENABLED, DEFAULT_RAMP_ENABLED); }
+    public void setRampEnabled(boolean enabled) { prefs.edit().putBoolean(RAMP_ENABLED, enabled).apply(); }
 
     public int rampDurationMinMs() { return prefs.getInt(RAMP_DURATION_MIN_MS, DEFAULT_RAMP_DURATION_MIN_MS); }
     public int rampDurationMaxMs() { return prefs.getInt(RAMP_DURATION_MAX_MS, DEFAULT_RAMP_DURATION_MAX_MS); }
@@ -71,7 +76,7 @@ public final class FreezeEntrySettingsStore {
 
     public void setRobotSkipPercent(int percent) {
         if (percent < MIN_ROBOT_SKIP_PERCENT || percent > MAX_ROBOT_SKIP_PERCENT) {
-            throw new IllegalArgumentException("Robot skip must be 0..25%");
+            throw new IllegalArgumentException("Robot skip must be 0..100%");
         }
         prefs.edit().putInt(ROBOT_SKIP_PERCENT, percent).apply();
     }
