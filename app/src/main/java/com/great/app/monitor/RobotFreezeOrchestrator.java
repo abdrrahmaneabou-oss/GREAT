@@ -17,7 +17,12 @@ import java.util.concurrent.TimeUnit;
  * FreezeCore itself remains unchanged so packet filtering, ramping and release mechanics stay exact.
  */
 public final class RobotFreezeOrchestrator {
-    public static final int FREEZE_SKIP_PERCENT = 25;
+    public static final int DEFAULT_FREEZE_SKIP_PERCENT = 25;
+    public static final int MIN_FREEZE_SKIP_PERCENT = 0;
+    public static final int MAX_FREEZE_SKIP_PERCENT = 25;
+    /** Kept for source compatibility; runtime behavior uses the configurable skipPercent field. */
+    @Deprecated public static final int FREEZE_SKIP_PERCENT = DEFAULT_FREEZE_SKIP_PERCENT;
+
     public static final int MIN_PERIODIC_INTERVAL_MS = 30_000;
     public static final int MAX_PERIODIC_INTERVAL_MS = 60_000;
     public static final int MIN_PERIODIC_FREEZE_MS = 300;
@@ -40,9 +45,21 @@ public final class RobotFreezeOrchestrator {
     private boolean periodicFreezeActive;
     private long nextPeriodicAtNanos;
     private ScheduledFuture<?> periodicEnd;
+    private int freezeSkipPercent = DEFAULT_FREEZE_SKIP_PERCENT;
 
     private RobotFreezeOrchestrator(Random rng) { this.rng = rng; }
     public static RobotFreezeOrchestrator instance() { return INSTANCE; }
+
+    public void setSkipPercent(int percent) {
+        if (percent < MIN_FREEZE_SKIP_PERCENT || percent > MAX_FREEZE_SKIP_PERCENT) {
+            throw new IllegalArgumentException("Robot skip must be 0..25%");
+        }
+        synchronized (lock) { freezeSkipPercent = percent; }
+    }
+
+    public int skipPercent() {
+        synchronized (lock) { return freezeSkipPercent; }
+    }
 
     /** Polling only tracks Robot ON/OFF; actual Freeze deadlines are random to the millisecond. */
     public void ensureStarted() {
@@ -54,12 +71,12 @@ public final class RobotFreezeOrchestrator {
         }
     }
 
-    /** 25% of white-loss Robot cycles are ignored completely. */
+    /** The configurable percentage of white-loss Robot cycles is ignored completely. */
     public boolean allowVisualFreeze() {
         synchronized (lock) {
             visualCycleBusy = true;
             if (periodicFreezeActive) return false;
-            return rng.nextInt(100) >= FREEZE_SKIP_PERCENT;
+            return rng.nextInt(100) >= freezeSkipPercent;
         }
     }
 
@@ -108,7 +125,7 @@ public final class RobotFreezeOrchestrator {
             if (now < nextPeriodicAtNanos) return;
 
             // Every deadline immediately receives a new independent 30..60 s deadline, whether
-            // this particular cycle runs or is skipped by the 25% rule / another active Freeze.
+            // this particular cycle runs or is skipped by the configured rule / another active Freeze.
             nextPeriodicAtNanos = now + TimeUnit.MILLISECONDS.toNanos(
                     randomInclusiveLocked(MIN_PERIODIC_INTERVAL_MS, MAX_PERIODIC_INTERVAL_MS));
 
@@ -118,7 +135,7 @@ public final class RobotFreezeOrchestrator {
                     && !periodicFreezeActive
                     && !manualFreeze
                     && !engine.freezeCore().holdTriggerActive();
-            if (eligible && rng.nextInt(100) >= FREEZE_SKIP_PERCENT) {
+            if (eligible && rng.nextInt(100) >= freezeSkipPercent) {
                 periodicFreezeActive = true;
                 durationMs = randomInclusiveLocked(MIN_PERIODIC_FREEZE_MS, MAX_PERIODIC_FREEZE_MS);
                 run = true;

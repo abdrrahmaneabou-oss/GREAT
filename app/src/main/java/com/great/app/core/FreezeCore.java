@@ -99,12 +99,16 @@ public final class FreezeCore implements AutoCloseable {
     public static final int MIN_RELEASE_DROP_LIMIT_PERCENT = 0;
     public static final int MAX_RELEASE_DROP_LIMIT_PERCENT = 100;
 
-    private static final int MIN_RAMP_DURATION_MS = 70;
-    private static final int MAX_RAMP_DURATION_MS = 130;
-    private static final int MIN_RAMP_STAGE1_HOLD_PERCENT = 20;
-    private static final int MAX_RAMP_STAGE1_HOLD_PERCENT = 40;
-    private static final int MIN_RAMP_STAGE2_HOLD_PERCENT = 55;
-    private static final int MAX_RAMP_STAGE2_HOLD_PERCENT = 75;
+    public static final int DEFAULT_RAMP_DURATION_MIN_MS = 70;
+    public static final int DEFAULT_RAMP_DURATION_MAX_MS = 130;
+    public static final int DEFAULT_RAMP_STAGE1_HOLD_MIN_PERCENT = 20;
+    public static final int DEFAULT_RAMP_STAGE1_HOLD_MAX_PERCENT = 40;
+    public static final int DEFAULT_RAMP_STAGE2_HOLD_MIN_PERCENT = 55;
+    public static final int DEFAULT_RAMP_STAGE2_HOLD_MAX_PERCENT = 75;
+    public static final int MIN_RAMP_DURATION_LIMIT_MS = 0;
+    public static final int MAX_RAMP_DURATION_LIMIT_MS = 5000;
+    public static final int MIN_RAMP_HOLD_LIMIT_PERCENT = 0;
+    public static final int MAX_RAMP_HOLD_LIMIT_PERCENT = 100;
 
     private static final long OUTBOUND_THROTTLE_WINDOW_NANOS =
             TimeUnit.MILLISECONDS.toNanos(OUTBOUND_THROTTLE_WINDOW_MS);
@@ -122,6 +126,7 @@ public final class FreezeCore implements AutoCloseable {
     private final ExecutorService releases = Executors.newSingleThreadExecutor(r -> daemon(r, "GREAT-Freeze-Release"));
     private OutputSink sink;
     private CycleListener cycleListener;
+    private volatile CycleStats latestCycleStats;
     private ScheduledFuture<?> timeout;
     private int durationSeconds = DEFAULT_DURATION_SECONDS;
 
@@ -168,6 +173,12 @@ public final class FreezeCore implements AutoCloseable {
     private boolean closed;
     private long generation;
 
+    private int rampDurationMinMs = DEFAULT_RAMP_DURATION_MIN_MS;
+    private int rampDurationMaxMs = DEFAULT_RAMP_DURATION_MAX_MS;
+    private int rampStage1MinPercent = DEFAULT_RAMP_STAGE1_HOLD_MIN_PERCENT;
+    private int rampStage1MaxPercent = DEFAULT_RAMP_STAGE1_HOLD_MAX_PERCENT;
+    private int rampStage2MinPercent = DEFAULT_RAMP_STAGE2_HOLD_MIN_PERCENT;
+    private int rampStage2MaxPercent = DEFAULT_RAMP_STAGE2_HOLD_MAX_PERCENT;
     private long rampStartedNanos;
     private long rampDurationNanos;
     private int rampStage1HoldPercent;
@@ -346,6 +357,31 @@ public final class FreezeCore implements AutoCloseable {
         releaseDelayMaxMs = maxMs;
     }
 
+    public void setRampProfile(int durationMinMs, int durationMaxMs,
+                               int stage1MinPercent, int stage1MaxPercent,
+                               int stage2MinPercent, int stage2MaxPercent) {
+        if (durationMinMs < MIN_RAMP_DURATION_LIMIT_MS || durationMaxMs > MAX_RAMP_DURATION_LIMIT_MS
+                || durationMinMs > durationMaxMs) {
+            throw new IllegalArgumentException("Ramp duration must be 0..5000 ms and min <= max");
+        }
+        if (!validPercentRange(stage1MinPercent, stage1MaxPercent)
+                || !validPercentRange(stage2MinPercent, stage2MaxPercent)) {
+            throw new IllegalArgumentException("Ramp hold percentages must be 0..100 and min <= max");
+        }
+        synchronized (lock) {
+            rampDurationMinMs = durationMinMs;
+            rampDurationMaxMs = durationMaxMs;
+            rampStage1MinPercent = stage1MinPercent;
+            rampStage1MaxPercent = stage1MaxPercent;
+            rampStage2MinPercent = stage2MinPercent;
+            rampStage2MaxPercent = stage2MaxPercent;
+        }
+    }
+
+    private static boolean validPercentRange(int min, int max) {
+        return min >= MIN_RAMP_HOLD_LIMIT_PERCENT && max <= MAX_RAMP_HOLD_LIMIT_PERCENT && min <= max;
+    }
+
     public void setOutboundThrottleEnabled(boolean enabled) {
         synchronized (lock) {
             outboundThrottleEnabled = enabled;
@@ -375,6 +411,7 @@ public final class FreezeCore implements AutoCloseable {
     }
 
     public void setCycleListener(CycleListener listener) { synchronized (lock) { cycleListener = listener; } }
+    public CycleStats latestCycleStats() { return latestCycleStats; }
 
     public void onCapabilityChanged(Capability capability, boolean value) {
         if (capability != Capability.FREEZE) return;
@@ -484,11 +521,11 @@ public final class FreezeCore implements AutoCloseable {
     }
 
     private void startRampLocked() {
-        int durationMs = MIN_RAMP_DURATION_MS + rng.nextInt(MAX_RAMP_DURATION_MS - MIN_RAMP_DURATION_MS + 1);
+        int durationMs = randomInclusiveLocked(rampDurationMinMs, rampDurationMaxMs);
         rampStartedNanos = System.nanoTime();
         rampDurationNanos = TimeUnit.MILLISECONDS.toNanos(durationMs);
-        rampStage1HoldPercent = MIN_RAMP_STAGE1_HOLD_PERCENT + rng.nextInt(MAX_RAMP_STAGE1_HOLD_PERCENT - MIN_RAMP_STAGE1_HOLD_PERCENT + 1);
-        rampStage2HoldPercent = MIN_RAMP_STAGE2_HOLD_PERCENT + rng.nextInt(MAX_RAMP_STAGE2_HOLD_PERCENT - MIN_RAMP_STAGE2_HOLD_PERCENT + 1);
+        rampStage1HoldPercent = randomInclusiveLocked(rampStage1MinPercent, rampStage1MaxPercent);
+        rampStage2HoldPercent = randomInclusiveLocked(rampStage2MinPercent, rampStage2MaxPercent);
     }
 
     private void clearRampLocked() {
@@ -632,14 +669,14 @@ public final class FreezeCore implements AutoCloseable {
     }
 
     private void publishCycle(CycleWork work) {
+        CycleStats stats = new CycleStats(work.startedAtMillis, work.source, work.arrived,
+                work.frozen, work.dropped, work.released, work.evicted,
+                work.payloadMin, work.payloadMax, work.trace, work.traceCount);
+        latestCycleStats = stats;
         CycleListener listener;
         synchronized (lock) { listener = cycleListener; }
         if (listener == null) return;
-        try {
-            listener.onCycleCompleted(new CycleStats(work.startedAtMillis, work.source, work.arrived,
-                    work.frozen, work.dropped, work.released, work.evicted,
-                    work.payloadMin, work.payloadMax, work.trace, work.traceCount));
-        } catch (RuntimeException ignored) { }
+        try { listener.onCycleCompleted(stats); } catch (RuntimeException ignored) { }
     }
 
     private static final class CycleWork {

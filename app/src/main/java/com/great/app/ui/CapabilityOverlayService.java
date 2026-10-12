@@ -15,16 +15,22 @@ import android.os.Looper;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.MotionEvent;
+import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.great.app.config.FreezeEntrySettingsStore;
 import com.great.app.config.MonitorSettingsStore;
 import com.great.app.core.Capability;
+import com.great.app.core.FreezeCore;
 import com.great.app.core.GreatEngine;
 
-/** Two independent floating controls: robot for visual monitoring, snowflake for manual Freeze. */
+import java.util.Map;
+import java.util.TreeMap;
+
+/** Two floating capability controls plus a compact, resizable latest-cycle packet summary. */
 public final class CapabilityOverlayService extends Service {
     public static final String ACTION_SHOW = "com.great.app.action.SHOW_CAPABILITIES";
     public static final String ACTION_HIDE = "com.great.app.action.HIDE_CAPABILITIES";
@@ -34,33 +40,47 @@ public final class CapabilityOverlayService extends Service {
     private static final String KEY_ROBOT_Y = "robot_y";
     private static final String KEY_FREEZE_X = "freeze_x";
     private static final String KEY_FREEZE_Y = "freeze_y";
+    private static final String KEY_SUMMARY_X = "packet_summary_x";
+    private static final String KEY_SUMMARY_Y = "packet_summary_y";
     private static final int ACTIVE = 0xffef5350;
     private static final int INACTIVE = 0xff7b808c;
     private static final int EDITING = 0xffffc107;
     private static final int SIZE_DP = 58;
     private static final long LONG_PRESS_MS = 300L;
+    private static final float SUMMARY_BASE_TEXT_SP = 13f;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable renderTick = new Runnable() {
         @Override public void run() {
             renderStates();
-            if (robotView != null || freezeView != null) handler.postDelayed(this, 150);
+            updatePacketSummary();
+            if (robotView != null || freezeView != null || packetSummaryView != null) {
+                handler.postDelayed(this, 150);
+            }
         }
     };
 
     private WindowManager windowManager;
     private SharedPreferences prefs;
     private MonitorSettingsStore monitorSettings;
+    private FreezeEntrySettingsStore freezeEntrySettings;
     private TextView robotView;
     private TextView freezeView;
+    private TextView packetSummaryView;
     private WindowManager.LayoutParams robotParams;
     private WindowManager.LayoutParams freezeParams;
+    private WindowManager.LayoutParams packetSummaryParams;
+    private ScaleGestureDetector summaryScaleDetector;
+    private float summaryScale = FreezeEntrySettingsStore.DEFAULT_SUMMARY_SCALE;
+    private long renderedSummaryCycle = Long.MIN_VALUE;
 
     @Override public void onCreate() {
         super.onCreate();
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         monitorSettings = new MonitorSettingsStore(this);
+        freezeEntrySettings = new FreezeEntrySettingsStore(this);
+        summaryScale = freezeEntrySettings.summaryScale();
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -75,28 +95,39 @@ public final class CapabilityOverlayService extends Service {
     }
 
     private void showOverlay() {
-        if (robotView != null || freezeView != null) return;
+        if (robotView != null || freezeView != null || packetSummaryView != null) return;
         Point screen = screenSize();
         int size = dp(SIZE_DP);
         int x = Math.max(0, screen.x - size - dp(18));
 
         freezeView = circle("❄️");
-        freezeParams = params(
+        freezeParams = circleParams(
                 prefs.getInt(KEY_FREEZE_X, x),
                 prefs.getInt(KEY_FREEZE_Y, dp(230)), size);
         freezeView.setOnTouchListener(new CircleTouch(false));
         windowManager.addView(freezeView, freezeParams);
 
         robotView = circle("🤖");
-        robotParams = params(
+        robotParams = circleParams(
                 prefs.getInt(KEY_ROBOT_X, x),
                 prefs.getInt(KEY_ROBOT_Y, dp(160)), size);
         robotView.setOnTouchListener(new CircleTouch(true));
         windowManager.addView(robotView, robotParams);
 
+        packetSummaryView = packetSummaryView();
+        packetSummaryParams = summaryParams(
+                prefs.getInt(KEY_SUMMARY_X, dp(18)),
+                prefs.getInt(KEY_SUMMARY_Y, dp(110)));
+        summaryScaleDetector = new ScaleGestureDetector(this, new SummaryScaleListener());
+        packetSummaryView.setOnTouchListener(new SummaryTouch());
+        packetSummaryView.setVisibility(View.GONE);
+        windowManager.addView(packetSummaryView, packetSummaryParams);
+        applySummaryScale(false);
+
         clampAndUpdate(robotView, robotParams, KEY_ROBOT_X, KEY_ROBOT_Y, false);
         clampAndUpdate(freezeView, freezeParams, KEY_FREEZE_X, KEY_FREEZE_Y, false);
         renderStates();
+        updatePacketSummary();
         handler.post(renderTick);
     }
 
@@ -112,9 +143,37 @@ public final class CapabilityOverlayService extends Service {
         return view;
     }
 
-    private WindowManager.LayoutParams params(int x, int y, int size) {
+    private TextView packetSummaryView() {
+        TextView view = new TextView(this);
+        view.setTextColor(Color.WHITE);
+        view.setTypeface(android.graphics.Typeface.MONOSPACE);
+        view.setGravity(Gravity.START);
+        view.setIncludeFontPadding(false);
+        view.setSingleLine(false);
+        view.setLineSpacing(0f, 1.0f);
+        view.setClickable(true);
+        view.setFocusable(false);
+        return view;
+    }
+
+    private WindowManager.LayoutParams circleParams(int x, int y, int size) {
         WindowManager.LayoutParams p = new WindowManager.LayoutParams(
                 size, size,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL |
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT);
+        p.gravity = Gravity.TOP | Gravity.START;
+        p.x = x;
+        p.y = y;
+        return p;
+    }
+
+    private WindowManager.LayoutParams summaryParams(int x, int y) {
+        WindowManager.LayoutParams p = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
                         WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL |
@@ -137,6 +196,71 @@ public final class CapabilityOverlayService extends Service {
             boolean active = GreatEngine.instance().capabilities().snapshot().enabled(Capability.FREEZE);
             freezeView.setBackground(circleBg(active ? ACTIVE : INACTIVE));
         }
+    }
+
+    private void updatePacketSummary() {
+        if (packetSummaryView == null || packetSummaryParams == null) return;
+        FreezeCore.CycleStats stats = GreatEngine.instance().freezeCore().latestCycleStats();
+        if (stats == null) return;
+        if (stats.startedAtMillis() == renderedSummaryCycle && packetSummaryView.getVisibility() == View.VISIBLE) return;
+
+        String summary = buildPacketSummary(stats);
+        renderedSummaryCycle = stats.startedAtMillis();
+        if (summary.isEmpty()) {
+            packetSummaryView.setVisibility(View.GONE);
+            return;
+        }
+        packetSummaryView.setText(summary);
+        packetSummaryView.setVisibility(View.VISIBLE);
+        packetSummaryView.requestLayout();
+        packetSummaryView.post(this::clampSummaryToScreen);
+    }
+
+    private static String buildPacketSummary(FreezeCore.CycleStats stats) {
+        TreeMap<Integer, Integer> notFrozen = new TreeMap<>();
+        TreeMap<Integer, Integer> frozen = new TreeMap<>();
+        for (int i = 0; i < stats.traceCount(); i++) {
+            if (!stats.traceHas(i, FreezeCore.TRACE_REACHED_PAYLOAD)) continue;
+            int bytes = stats.tracePayloadBytes(i);
+            boolean wasFrozen = stats.traceHas(i, FreezeCore.TRACE_FROZEN);
+            TreeMap<Integer, Integer> target = wasFrozen ? frozen : notFrozen;
+            target.put(bytes, target.getOrDefault(bytes, 0) + 1);
+        }
+        if (notFrozen.isEmpty() && frozen.isEmpty()) return "";
+
+        StringBuilder out = new StringBuilder();
+        appendGroups(out, notFrozen, false);
+        if (!notFrozen.isEmpty() && !frozen.isEmpty()) out.append('\n');
+        appendGroups(out, frozen, true);
+        if (out.length() > 0 && out.charAt(out.length() - 1) == '\n') out.setLength(out.length() - 1);
+        return out.toString();
+    }
+
+    private static void appendGroups(StringBuilder out, TreeMap<Integer, Integer> groups, boolean frozen) {
+        for (Map.Entry<Integer, Integer> entry : groups.entrySet()) {
+            out.append(entry.getKey()).append("B ×").append(entry.getValue())
+                    .append(frozen ? " Freeze" : " No Freeze").append('\n');
+        }
+    }
+
+    private void applySummaryScale(boolean persist) {
+        summaryScale = clamp(summaryScale,
+                FreezeEntrySettingsStore.MIN_SUMMARY_SCALE,
+                FreezeEntrySettingsStore.MAX_SUMMARY_SCALE);
+        if (packetSummaryView != null) {
+            packetSummaryView.setTextSize(SUMMARY_BASE_TEXT_SP * summaryScale);
+            int horizontal = Math.max(1, Math.round(dp(6) * summaryScale));
+            int vertical = Math.max(1, Math.round(dp(4) * summaryScale));
+            packetSummaryView.setPadding(horizontal, vertical, horizontal, vertical);
+            GradientDrawable background = new GradientDrawable();
+            background.setColor(0xd91a1d25);
+            background.setCornerRadius(Math.max(1f, dp(7) * summaryScale));
+            background.setStroke(Math.max(1, Math.round(dp(1) * summaryScale)), 0x99ffffff);
+            packetSummaryView.setBackground(background);
+            packetSummaryView.requestLayout();
+            packetSummaryView.post(this::clampSummaryToScreen);
+        }
+        if (persist) freezeEntrySettings.setSummaryScale(summaryScale);
     }
 
     private void onRobotClick() {
@@ -260,6 +384,62 @@ public final class CapabilityOverlayService extends Service {
         }
     }
 
+    private final class SummaryScaleListener extends ScaleGestureDetector.SimpleOnScaleGestureListener {
+        @Override public boolean onScale(ScaleGestureDetector detector) {
+            summaryScale *= detector.getScaleFactor();
+            applySummaryScale(false);
+            return true;
+        }
+
+        @Override public void onScaleEnd(ScaleGestureDetector detector) {
+            applySummaryScale(true);
+        }
+    }
+
+    private final class SummaryTouch implements View.OnTouchListener {
+        private float downRawX, downRawY;
+        private int startX, startY;
+        private boolean dragging;
+
+        @Override public boolean onTouch(View view, MotionEvent event) {
+            if (packetSummaryParams == null) return false;
+            if (summaryScaleDetector != null) summaryScaleDetector.onTouchEvent(event);
+
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.getRawX();
+                    downRawY = event.getRawY();
+                    startX = packetSummaryParams.x;
+                    startY = packetSummaryParams.y;
+                    dragging = false;
+                    return true;
+                }
+                case MotionEvent.ACTION_POINTER_DOWN -> {
+                    dragging = false;
+                    return true;
+                }
+                case MotionEvent.ACTION_MOVE -> {
+                    if (event.getPointerCount() != 1 || (summaryScaleDetector != null && summaryScaleDetector.isInProgress())) return true;
+                    float dx = event.getRawX() - downRawX;
+                    float dy = event.getRawY() - downRawY;
+                    if (!dragging && Math.hypot(dx, dy) > dp(5)) dragging = true;
+                    if (dragging) moveSummary(startX + Math.round(dx), startY + Math.round(dy));
+                    return true;
+                }
+                case MotionEvent.ACTION_UP -> {
+                    if (dragging) saveSummaryPosition();
+                    freezeEntrySettings.setSummaryScale(summaryScale);
+                    return true;
+                }
+                case MotionEvent.ACTION_CANCEL -> {
+                    freezeEntrySettings.setSummaryScale(summaryScale);
+                    return true;
+                }
+                default -> { return true; }
+            }
+        }
+    }
+
     private void move(View view, WindowManager.LayoutParams p, int x, int y) {
         Point screen = screenSize();
         p.x = clamp(x, 0, Math.max(0, screen.x - p.width));
@@ -267,8 +447,28 @@ public final class CapabilityOverlayService extends Service {
         try { windowManager.updateViewLayout(view, p); } catch (Throwable ignored) { }
     }
 
+    private void moveSummary(int x, int y) {
+        if (packetSummaryView == null || packetSummaryParams == null) return;
+        Point screen = screenSize();
+        int width = Math.max(1, packetSummaryView.getWidth());
+        int height = Math.max(1, packetSummaryView.getHeight());
+        packetSummaryParams.x = clamp(x, 0, Math.max(0, screen.x - width));
+        packetSummaryParams.y = clamp(y, 0, Math.max(0, screen.y - height));
+        try { windowManager.updateViewLayout(packetSummaryView, packetSummaryParams); } catch (Throwable ignored) { }
+    }
+
+    private void clampSummaryToScreen() {
+        if (packetSummaryView == null || packetSummaryParams == null || packetSummaryView.getVisibility() != View.VISIBLE) return;
+        moveSummary(packetSummaryParams.x, packetSummaryParams.y);
+    }
+
     private void savePosition(WindowManager.LayoutParams p, String keyX, String keyY) {
         prefs.edit().putInt(keyX, p.x).putInt(keyY, p.y).apply();
+    }
+
+    private void saveSummaryPosition() {
+        if (packetSummaryParams == null) return;
+        savePosition(packetSummaryParams, KEY_SUMMARY_X, KEY_SUMMARY_Y);
     }
 
     private void clampAndUpdate(View view, WindowManager.LayoutParams p,
@@ -290,15 +490,21 @@ public final class CapabilityOverlayService extends Service {
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private static int clamp(int value, int min, int max) { return Math.max(min, Math.min(max, value)); }
+    private static float clamp(float value, float min, float max) { return Math.max(min, Math.min(max, value)); }
 
     private void removeOverlay() {
         handler.removeCallbacks(renderTick);
         if (robotView != null) try { windowManager.removeView(robotView); } catch (Throwable ignored) { }
         if (freezeView != null) try { windowManager.removeView(freezeView); } catch (Throwable ignored) { }
+        if (packetSummaryView != null) try { windowManager.removeView(packetSummaryView); } catch (Throwable ignored) { }
         robotView = null;
         freezeView = null;
+        packetSummaryView = null;
         robotParams = null;
         freezeParams = null;
+        packetSummaryParams = null;
+        summaryScaleDetector = null;
+        renderedSummaryCycle = Long.MIN_VALUE;
     }
 
     @Override public void onDestroy() { removeOverlay(); super.onDestroy(); }
