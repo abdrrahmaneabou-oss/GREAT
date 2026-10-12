@@ -30,8 +30,19 @@ public final class FreezeCoreReleaseTuningTest {
             }
             state.set(Capability.FREEZE, false);
             assertTrue(released.await(2, TimeUnit.SECONDS));
+            assertTrue(waitForReleased(diagnostics, 8, 2, TimeUnit.SECONDS));
             assertEquals(8, diagnostics.snapshot().released());
         }
+    }
+
+    private static boolean waitForReleased(EngineDiagnostics diagnostics, long expected,
+                                           long timeout, TimeUnit unit) throws InterruptedException {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (System.nanoTime() < deadline) {
+            if (diagnostics.snapshot().released() == expected) return true;
+            Thread.sleep(2L);
+        }
+        return diagnostics.snapshot().released() == expected;
     }
 
     @Test public void acceptedReleaseRangeBoundariesMatchUiContract() {
