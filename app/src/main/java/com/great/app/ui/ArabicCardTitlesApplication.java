@@ -7,7 +7,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
-/** Keeps the control surface localized, prepares tuning cards, then presents the compact dashboard. */
+/** Prepares the real tuning controls, localizes them, then installs the comfort-first settings UI. */
 public final class ArabicCardTitlesApplication extends Application {
     @Override public void onCreate() {
         super.onCreate();
@@ -15,17 +15,20 @@ public final class ArabicCardTitlesApplication extends Application {
             @Override public void onActivityResumed(Activity activity) {
                 if (!(activity instanceof GreatMainActivity)) return;
                 View root = activity.getWindow().getDecorView();
-                ReleaseTuningUi.prepare(activity, root);
-                FreezeEntryTuningUi.ensure(activity, root);
-                ConfigManagementUi.ensure(activity, root);
-                translateTree(root);
-                GeniusDashboardUi.ensure(activity, root);
+                if (!ComfortSettingsUi.isInstalled(root)) {
+                    ReleaseTuningUi.prepare(activity, root);
+                    FreezeEntryTuningUi.ensure(activity, root);
+                    ConfigManagementUi.ensure(activity, root);
+                    translateTree(root);
+                    ComfortSettingsUi.ensure(activity, root);
+                }
                 root.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+                    if (ComfortSettingsUi.isInstalled(root)) return;
                     ReleaseTuningUi.ensureCard(activity, root);
                     FreezeEntryTuningUi.ensure(activity, root);
                     ConfigManagementUi.ensure(activity, root);
                     translateTree(root);
-                    GeniusDashboardUi.ensure(activity, root);
+                    ComfortSettingsUi.ensure(activity, root);
                 });
             }
 
