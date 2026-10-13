@@ -7,7 +7,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
-/** Prepares the real tuning controls, localizes them, then installs the comfort-first settings UI. */
+/** Prepares the real tuning controls, localizes them, then keeps the classic open scrolling cards. */
 public final class ArabicCardTitlesApplication extends Application {
     @Override public void onCreate() {
         super.onCreate();
@@ -15,23 +15,19 @@ public final class ArabicCardTitlesApplication extends Application {
             @Override public void onActivityResumed(Activity activity) {
                 if (!(activity instanceof GreatMainActivity)) return;
                 View root = activity.getWindow().getDecorView();
-                if (!ComfortSettingsUi.isInstalled(root)) {
-                    ReleaseTuningUi.prepare(activity, root);
+                ReleaseTuningUi.prepare(activity, root);
+                FreezeEntryTuningUi.ensure(activity, root);
+                ConfigManagementUi.ensure(activity, root);
+                translateTree(root);
+                TargetAppsEditorUi.ensure(root);
+                LegacyPaletteUi.ensure(activity, root);
+                root.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+                    ReleaseTuningUi.ensureCard(activity, root);
                     FreezeEntryTuningUi.ensure(activity, root);
                     ConfigManagementUi.ensure(activity, root);
                     translateTree(root);
-                    ComfortSettingsUi.ensure(activity, root);
-                }
-                TargetAppsEditorUi.ensure(root);
-                root.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
-                    if (!ComfortSettingsUi.isInstalled(root)) {
-                        ReleaseTuningUi.ensureCard(activity, root);
-                        FreezeEntryTuningUi.ensure(activity, root);
-                        ConfigManagementUi.ensure(activity, root);
-                        translateTree(root);
-                        ComfortSettingsUi.ensure(activity, root);
-                    }
                     TargetAppsEditorUi.ensure(root);
+                    LegacyPaletteUi.ensure(activity, root);
                 });
             }
 
