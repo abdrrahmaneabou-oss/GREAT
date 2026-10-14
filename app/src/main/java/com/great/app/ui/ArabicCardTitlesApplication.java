@@ -18,6 +18,7 @@ public final class ArabicCardTitlesApplication extends Application {
                 ReleaseTuningUi.prepare(activity, root);
                 FreezeEntryTuningUi.ensure(activity, root);
                 ConfigManagementUi.ensure(activity, root);
+                DeleteVpnConfigUi.ensure(activity, root);
                 translateTree(root);
                 TargetAppsEditorUi.ensure(root);
                 LegacyPaletteUi.ensure(activity, root);
@@ -25,6 +26,7 @@ public final class ArabicCardTitlesApplication extends Application {
                     ReleaseTuningUi.ensureCard(activity, root);
                     FreezeEntryTuningUi.ensure(activity, root);
                     ConfigManagementUi.ensure(activity, root);
+                    DeleteVpnConfigUi.ensure(activity, root);
                     translateTree(root);
                     TargetAppsEditorUi.ensure(root);
                     LegacyPaletteUi.ensure(activity, root);
