@@ -62,4 +62,42 @@ public final class FreezeCoreAuditRegressionTest {
             assertEquals(200, f.core.payloadMin());
         }
     }
+    @Test public void previousReleaseWaitsUntilNextFreezeEnds() throws Exception {
+        try (Fixture f = new Fixture()) {
+            f.core.setRampProfile(0, 0, 100, 100, 100, 100);
+            f.core.setReleaseDropEnabled(false);
+            f.core.setReleaseBurstEnabled(false);
+            f.core.setReleaseDelayEnabled(false);
+            java.util.concurrent.CountDownLatch firstWrite =
+                    new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.CountDownLatch continueWrite =
+                    new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.CountDownLatch secondWrite =
+                    new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicInteger emitted =
+                    new java.util.concurrent.atomic.AtomicInteger();
+            f.core.attach(packet -> {
+                int number = emitted.incrementAndGet();
+                if (number == 1) {
+                    firstWrite.countDown();
+                    if (!continueWrite.await(2, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw new AssertionError("Blocked emission not released");
+                    }
+                }
+                if (number == 2) secondWrite.countDown();
+            });
+            f.core.setHoldTrigger(true);
+            assertEquals(PacketDecision.HOLD, f.decide());
+            assertEquals(PacketDecision.HOLD, f.decide());
+            f.core.setHoldTrigger(false);
+            assertTrue(firstWrite.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            f.core.setHoldTrigger(true);
+            continueWrite.countDown();
+            Thread.sleep(60);
+            assertEquals("Old packet emitted while new freeze is active", 1, emitted.get());
+            f.core.setHoldTrigger(false);
+            assertTrue(secondWrite.await(2, java.util.concurrent.TimeUnit.SECONDS));
+        }
+    }
+
 }
