@@ -88,12 +88,15 @@ public final class RobotFreezeOrchestrator {
     }
 
     public void resetVisualCycle() {
-        boolean periodic;
         synchronized (lock) {
             visualCycleBusy = false;
-            periodic = periodicFreezeActive;
+            periodicFreezeActive = false;
+            nextPeriodicAtNanos = 0L;
+            if (periodicEnd != null) periodicEnd.cancel(false);
+            periodicEnd = null;
         }
-        if (!periodic) GlobalRobotOutboundThrottle.instance().cancelActiveCycle();
+        GreatEngine.instance().freezeCore().setPeriodicHoldTrigger(false);
+        GlobalRobotOutboundThrottle.instance().cancelActiveCycle();
     }
 
     public void visualFreezeStarted() {
@@ -138,10 +141,16 @@ public final class RobotFreezeOrchestrator {
         }
 
         if (!run) return;
-        GreatEngine.instance().freezeCore().setHoldTrigger(true);
+        GreatEngine.instance().freezeCore().setPeriodicHoldTrigger(true);
         GlobalRobotOutboundThrottle.instance().startLightForPeriodicFreeze();
         final int chosenDuration = durationMs;
         synchronized (lock) {
+            if (!periodicFreezeActive || !FreezeMonitorService.isMonitoringActive()) {
+                periodicFreezeActive = false;
+                GreatEngine.instance().freezeCore().setPeriodicHoldTrigger(false);
+                GlobalRobotOutboundThrottle.instance().cancelActiveCycle();
+                return;
+            }
             periodicEnd = scheduler.schedule(this::finishPeriodicFreeze,
                     chosenDuration, TimeUnit.MILLISECONDS);
         }
@@ -153,7 +162,7 @@ public final class RobotFreezeOrchestrator {
             if (!periodicFreezeActive) return;
             periodicFreezeActive = false;
         }
-        GreatEngine.instance().freezeCore().setHoldTrigger(false);
+        GreatEngine.instance().freezeCore().setPeriodicHoldTrigger(false);
         if (FreezeMonitorService.isMonitoringActive()) {
             GlobalRobotOutboundThrottle.instance().finishPeriodicFreezeAndStartPostThrottle();
         } else {
