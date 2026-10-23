@@ -567,8 +567,23 @@ public final class GreatMainActivity extends Activity {
                                 + record.arrived + " arrivals; counters include all packets.",
                         11, MUTED, false), 4);
             }
-            StringBuilder lines = new StringBuilder(Math.max(96, record.trace.length * 44));
-            for (int i = 0; i < record.trace.length; i++) {
+            LinearLayout pages = column();
+            add(detailedFreezeHistoryBody, pages, 6);
+            appendTracePage(pages, record, 0);
+            cycle++;
+        }
+    }
+
+    /**
+     * Large traces (up to 10,000 packets) are rendered in small pages. The full
+     * saved history remains inspectable without forcing one enormous TextView layout.
+     */
+    private void appendTracePage(LinearLayout target, FreezeHistoryStore.DetailRecord record,
+                                 int start) {
+        final int end = Math.min(record.trace.length, start + 200);
+        if (start >= end) return;
+            StringBuilder lines = new StringBuilder(Math.max(96, (end - start) * 44));
+            for (int i = start; i < end; i++) {
                 int value = record.trace[i];
                 lines.append('#').append(i + 1).append(" • ");
                 boolean payloadKnown = (value & FreezeCore.TRACE_PAYLOAD_KNOWN) != 0;
@@ -591,10 +606,18 @@ public final class GreatMainActivity extends Activity {
                 } else {
                     lines.append("PAYLOAD PASS • NOT FROZEN");
                 }
-                if (i + 1 < record.trace.length) lines.append('\n');
+                if (i + 1 < end) lines.append('\n');
             }
-            add(detailedFreezeHistoryBody, text(lines.toString(), 11, MUTED, false), 6);
-            cycle++;
+            add(target, text(lines.toString(), 11, MUTED, false), 6);
+
+        if (end < record.trace.length) {
+            TextView more = button("SHOW NEXT " + Math.min(200, record.trace.length - end)
+                    + " PACKETS • " + end + "/" + record.trace.length, true);
+            more.setOnClickListener(v -> {
+                target.removeView(more);
+                appendTracePage(target, record, end);
+            });
+            add(target, more, 8);
         }
     }
 
