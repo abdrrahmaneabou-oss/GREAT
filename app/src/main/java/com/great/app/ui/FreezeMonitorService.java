@@ -314,7 +314,6 @@ public final class FreezeMonitorService extends Service {
                         });
                     }
                 }, mainHandler);
-                createCapture();
             } catch (Throwable e) {
                 captureSessionEnded = true;
                 setNotReady("Screen capture failed");
@@ -345,17 +344,31 @@ public final class FreezeMonitorService extends Service {
         captureSessionEnded = false;
         running = true;
         editing = false;
+        monitoringActive = settings.monitoringEnabled();
         lockOverlay();
+        resetStationaryWhite();
         synchronized (engine) { engine.reset(); }
-        if (settings.monitoringEnabled()) {
-            monitoringActive = true;
-            setVisual(COLOR_WAITING, "Waiting for white");
-            RobotFreezeOrchestrator.instance().onMonitoringResumed();
+        if (monitoringActive) {
+            // The detector must be ON before createVirtualDisplay can emit its
+            // first frame. Some Android devices emit one frame for a static
+            // scene, and the previous order threw that one frame away.
+            setVisual(COLOR_NOT_READY, "Awaiting first captured image • monitor ON");
         } else {
-            monitoringActive = false;
             GreatEngine.instance().freezeCore().setHoldTrigger(false);
             setVisual(COLOR_PAUSED, "Monitoring OFF");
         }
+        if (virtualDisplay == null) {
+            try {
+                createCapture();
+            } catch (Throwable error) {
+                captureSessionEnded = true;
+                setNotReady("Cannot start screen frames (" + error.getClass().getSimpleName() + ")");
+                showRecoveryNotification("No screen frames • tap to restart capture permission");
+                stopSelf();
+                return;
+            }
+        }
+        if (monitoringActive) RobotFreezeOrchestrator.instance().onMonitoringResumed();
     }
 
     private void createCapture() {
