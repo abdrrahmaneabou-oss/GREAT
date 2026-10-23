@@ -5,10 +5,14 @@ import android.app.Application;
 import android.os.Bundle;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
+import java.util.WeakHashMap;
 import android.widget.TextView;
 
 /** Prepares the real tuning controls, localizes them, then keeps the classic open scrolling cards. */
 public final class ArabicCardTitlesApplication extends Application {
+    private final WeakHashMap<Activity, ViewTreeObserver.OnGlobalLayoutListener> layoutListeners =
+            new WeakHashMap<>();
     @Override public void onCreate() {
         super.onCreate();
         registerActivityLifecycleCallbacks(new ActivityLifecycleCallbacks() {
@@ -22,20 +26,29 @@ public final class ArabicCardTitlesApplication extends Application {
                 translateTree(root);
                 TargetAppsEditorUi.ensure(root);
                 LegacyPaletteUi.ensure(activity, root);
-                root.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
-                    ReleaseTuningUi.ensureCard(activity, root);
-                    FreezeEntryTuningUi.ensure(activity, root);
-                    ConfigManagementUi.ensure(activity, root);
-                    DeleteVpnConfigUi.ensure(activity, root);
-                    translateTree(root);
-                    TargetAppsEditorUi.ensure(root);
-                    LegacyPaletteUi.ensure(activity, root);
-                });
+                if (!layoutListeners.containsKey(activity)) {
+                    ViewTreeObserver.OnGlobalLayoutListener listener = () -> {
+                        ReleaseTuningUi.ensureCard(activity, root);
+                        ConfigManagementUi.ensure(activity, root);
+                        DeleteVpnConfigUi.ensure(activity, root);
+                        translateTree(root);
+                        TargetAppsEditorUi.ensure(root);
+                        LegacyPaletteUi.ensure(activity, root);
+                    };
+                    root.getViewTreeObserver().addOnGlobalLayoutListener(listener);
+                    layoutListeners.put(activity, listener);
+                }
             }
 
             @Override public void onActivityCreated(Activity activity, Bundle state) { }
             @Override public void onActivityStarted(Activity activity) { }
-            @Override public void onActivityPaused(Activity activity) { }
+            @Override public void onActivityPaused(Activity activity) {
+                ViewTreeObserver.OnGlobalLayoutListener listener = layoutListeners.remove(activity);
+                if (listener != null) {
+                    View root = activity.getWindow().getDecorView();
+                    root.getViewTreeObserver().removeOnGlobalLayoutListener(listener);
+                }
+            }
             @Override public void onActivityStopped(Activity activity) { }
             @Override public void onActivitySaveInstanceState(Activity activity, Bundle state) { }
             @Override public void onActivityDestroyed(Activity activity) { }
