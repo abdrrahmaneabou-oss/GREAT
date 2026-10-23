@@ -109,6 +109,18 @@ public final class ReleaseSettingsStore {
         prefs.edit().putInt(DELAY_MIN_MS, min).putInt(DELAY_MAX_MS, max).apply();
     }
 
+    /** Persist all three ranges in a single preference transaction. */
+    public void setRanges(int dropMin, int dropMax, int burstMin, int burstMax,
+                          int delayMin, int delayMax) {
+        if (!validDropRange(dropMin, dropMax) || !validBurstRange(burstMin, burstMax)
+                || !validDelayRange(delayMin, delayMax)) {
+            throw new IllegalArgumentException("Invalid release settings");
+        }
+        prefs.edit().putInt(DROP_MIN, dropMin).putInt(DROP_MAX, dropMax)
+                .putInt(BURST_MIN, burstMin).putInt(BURST_MAX, burstMax)
+                .putInt(DELAY_MIN_MS, delayMin).putInt(DELAY_MAX_MS, delayMax).apply();
+    }
+
     private int rawDropMin() { return prefs.getInt(DROP_MIN, DEFAULT_DROP_MIN_PERCENT); }
     private int rawDropMax() { return prefs.getInt(DROP_MAX, DEFAULT_DROP_MAX_PERCENT); }
     private int rawBurstMin() { return prefs.getInt(BURST_MIN, DEFAULT_BURST_MIN); }
