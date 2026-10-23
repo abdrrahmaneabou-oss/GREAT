@@ -34,6 +34,7 @@ import android.view.WindowManager;
 import com.great.app.config.MonitorSettingsStore;
 import com.great.app.core.GreatEngine;
 import com.great.app.monitor.PixelTriggerMonitorEngine;
+import com.great.app.monitor.RobotFreezeOrchestrator;
 
 import java.nio.ByteBuffer;
 
@@ -81,6 +82,8 @@ public final class FreezeMonitorService extends Service {
     private volatile int captureWidth;
     private volatile int captureHeight;
     private volatile boolean captureResizePending;
+    private volatile boolean captureSessionEnded;
+    private volatile long lastValidFrameNanos;
 
     public static boolean isRunning() { return running; }
     public static boolean isEditing() { return editing; }
@@ -161,11 +164,13 @@ public final class FreezeMonitorService extends Service {
                     @Override public void onStop() {
                         mainHandler.post(() -> {
                             if (shuttingDown) return;
+                            captureSessionEnded = true;
                             running = false;
                             monitoringActive = false;
                             cancelFreezeTimeout();
+                            RobotFreezeOrchestrator.instance().resetVisualCycle();
                             GreatEngine.instance().freezeCore().setHoldTrigger(false);
-                            setNotReady("Screen capture stopped");
+                            setNotReady("Screen capture ended • grant permission to resume");
                             stopSelf();
                         });
                     }
@@ -178,10 +183,11 @@ public final class FreezeMonitorService extends Service {
             }
         }
         ensureOverlay();
+        captureSessionEnded = false;
         running = true;
         editing = false;
         lockOverlay();
-        engine.reset();
+        synchronized (engine) { engine.reset(); }
         if (settings.monitoringEnabled()) {
             monitoringActive = true;
             setVisual(COLOR_WAITING, "Waiting for white");
@@ -220,11 +226,20 @@ public final class FreezeMonitorService extends Service {
                 return;
             }
 
-            if (editing || !running || !settings.enabled() || !settings.monitoringEnabled()) return;
+            if (editing || !running || !monitoringActive || !settings.enabled()
+                    || !settings.monitoringEnabled()) return;
             PixelTriggerMonitorEngine.Sample sample = sampleImage(image);
-            if (sample != null) engine.process(sample);
-        } catch (Throwable ignored) {
-            mainHandler.post(() -> setNotReady("Monitor frame unavailable"));
+            if (sample != null) {
+                lastValidFrameNanos = System.nanoTime();
+                synchronized (engine) { engine.process(sample); }
+            }
+        } catch (Throwable error) {
+            // A single corrupt frame must not turn an ON session into a misleading OFF state.
+            mainHandler.post(() -> {
+                if (running && monitoringActive && !shuttingDown) {
+                    setVisual(COLOR_NOT_READY, "Frame unavailable • monitoring retries");
+                }
+            });
         } finally {
             if (image != null) image.close();
             if (resizeAfterFrame) mainHandler.post(this::resizeCaptureToCurrentScreen);
@@ -260,7 +275,9 @@ public final class FreezeMonitorService extends Service {
                 try { old.close(); } catch (Throwable ignored) { }
             }
 
-            engine.reset();
+            synchronized (engine) { engine.reset(); }
+            repositionOverlay();
+            RobotFreezeOrchestrator.instance().resetVisualCycle();
             if (settings.monitoringEnabled() && !editing) {
                 monitoringActive = true;
                 GreatEngine.instance().freezeCore().setHoldTrigger(false);
@@ -312,7 +329,7 @@ public final class FreezeMonitorService extends Service {
     }
 
     private void onDetectorState(PixelTriggerMonitorEngine.State state) {
-        if (!running || editing || !settings.monitoringEnabled()) return;
+        if (!running || !monitoringActive || editing || !settings.monitoringEnabled()) return;
         switch (state) {
             case WAITING_FOR_WHITE -> {
                 cancelFreezeTimeout();
@@ -326,6 +343,7 @@ public final class FreezeMonitorService extends Service {
             }
             case FIRED -> {
                 GreatEngine.instance().freezeCore().setHoldTrigger(true);
+                GreatEngine.instance().freezeCore().setVisualFreezeDeadlineMillis(settings.maxFreezeMillis());
                 setVisual(COLOR_FIRED, "FIRED • white lost • Freeze ON");
                 scheduleFreezeTimeout();
             }
@@ -353,7 +371,8 @@ public final class FreezeMonitorService extends Service {
         monitoringActive = false;
         cancelFreezeTimeout();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
-        engine.reset();
+        synchronized (engine) { engine.reset(); }
+        RobotFreezeOrchestrator.instance().resetVisualCycle();
         lockOverlay();
         setVisual(COLOR_PAUSED, "Monitoring OFF");
     }
@@ -373,7 +392,8 @@ public final class FreezeMonitorService extends Service {
         dragState = null;
         cancelFreezeTimeout();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
-        engine.reset();
+        synchronized (engine) { engine.reset(); }
+        RobotFreezeOrchestrator.instance().resetVisualCycle();
         if (monitorView != null && overlayParams != null) {
             overlayParams.flags = editFlags();
             try { windowManager.updateViewLayout(monitorView, overlayParams); } catch (Throwable ignored) { }
@@ -392,7 +412,8 @@ public final class FreezeMonitorService extends Service {
     private void resetDetector(String status) {
         cancelFreezeTimeout();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
-        engine.reset();
+        synchronized (engine) { engine.reset(); }
+        RobotFreezeOrchestrator.instance().resetVisualCycle();
         if (settings.monitoringEnabled()) setVisual(COLOR_WAITING, status);
         else setVisual(COLOR_PAUSED, "Monitoring OFF");
     }
@@ -400,6 +421,7 @@ public final class FreezeMonitorService extends Service {
     private void setNotReady(String status) {
         monitoringActive = false;
         cancelFreezeTimeout();
+        RobotFreezeOrchestrator.instance().resetVisualCycle();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
         setVisual(COLOR_NOT_READY, status);
     }
@@ -426,6 +448,17 @@ public final class FreezeMonitorService extends Service {
         overlayParams.y = clamp(Math.round(settings.centerYFraction() * screen.y - touchSize / 2f),
                 0, Math.max(0, screen.y - touchSize));
         windowManager.addView(monitorView, overlayParams);
+    }
+
+    private void repositionOverlay() {
+        if (monitorView == null || overlayParams == null) return;
+        Point screen = screenSize();
+        overlayParams.x = clamp(Math.round(settings.centerXFraction() * screen.x
+                - overlayParams.width / 2f), 0, Math.max(0, screen.x - overlayParams.width));
+        overlayParams.y = clamp(Math.round(settings.centerYFraction() * screen.y
+                - overlayParams.height / 2f), 0, Math.max(0, screen.y - overlayParams.height));
+        try { windowManager.updateViewLayout(monitorView, overlayParams); }
+        catch (Throwable ignored) { }
     }
 
     private void lockOverlay() {
@@ -545,8 +578,9 @@ public final class FreezeMonitorService extends Service {
         monitoringActive = false;
         captureResizePending = false;
         cancelFreezeTimeout();
+        RobotFreezeOrchestrator.instance().resetVisualCycle();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
-        publicStatus = "Monitor stopped";
+        if (!captureSessionEnded) publicStatus = "Monitor stopped";
         removeOverlay();
         if (imageReader != null) {
             try { imageReader.setOnImageAvailableListener(null, null); } catch (Throwable ignored) { }
@@ -584,6 +618,7 @@ public final class FreezeMonitorService extends Service {
         monitoringActive = false;
         captureResizePending = false;
         cancelFreezeTimeout();
+        RobotFreezeOrchestrator.instance().resetVisualCycle();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
         removeOverlay();
         if (!shuttingDown) {
@@ -593,7 +628,7 @@ public final class FreezeMonitorService extends Service {
             if (projection != null) try { projection.stop(); } catch (Throwable ignored) { }
         }
         if (captureThread != null) captureThread.quitSafely();
-        publicStatus = "Monitor stopped";
+        if (!captureSessionEnded) publicStatus = "Monitor stopped";
         super.onDestroy();
     }
 
