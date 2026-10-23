@@ -47,7 +47,7 @@ final class LegacyPaletteUi {
     }
 
     private static void styleTree(Activity activity, View view) {
-        if (Boolean.TRUE.equals(STYLED.put(view, Boolean.TRUE))) return;
+        if (!Boolean.TRUE.equals(STYLED.put(view, Boolean.TRUE))) {
         if (view instanceof EditText) {
             EditText input = (EditText) view;
             input.setTextColor(TEXT);
@@ -71,7 +71,10 @@ final class LegacyPaletteUi {
                 text.setTextColor(ACCENT);
             }
         }
+        }
 
+        // Traverse even previously styled groups so dynamically added children
+        // still receive their initial palette and controls remain readable.
         if (!(view instanceof ViewGroup)) return;
         ViewGroup group = (ViewGroup) view;
         for (int i = 0; i < group.getChildCount(); i++) styleTree(activity, group.getChildAt(i));
