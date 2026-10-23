@@ -430,20 +430,30 @@ public final class FreezeMonitorService extends Service {
                 try { old.setOnImageAvailableListener(null, null); } catch (RuntimeException ignored) { }
                 try { old.close(); } catch (RuntimeException ignored) { }
             }
-            // A stale image may have left the color detector fired. To avoid a
-            // false new trigger, require fresh white frames to arm it again.
-            cancelFreezeTimeout();
-            GreatEngine.instance().freezeCore().setHoldTrigger(false);
-            synchronized (engine) { engine.reset(); }
+            // An unchanged image may legitimately produce no frames. Do not
+            // discard an ARMED white baseline merely because the screen was
+            // static: otherwise a later white->dark transition would be missed.
+            if (!"No new captured frames".equals(reason)) {
+                cancelFreezeTimeout();
+                GreatEngine.instance().freezeCore().setHoldTrigger(false);
+                synchronized (engine) { engine.reset(); }
+                RobotFreezeOrchestrator.instance().onMonitoringResumed();
+            }
             repositionOverlay();
-            RobotFreezeOrchestrator.instance().onMonitoringResumed();
-            setVisual(COLOR_NOT_READY, reason + " • capture reconnected, checking frames");
+            setVisual(COLOR_NOT_READY, reason + " • surface refreshed, checking frames");
         } catch (Throwable e) {
             lastImageFrameNanos = System.nanoTime();
             if (surfaceRecoveryAttempts >= MAX_SURFACE_REBIND_ATTEMPTS) {
-                setVisual(COLOR_NOT_READY,
-                        "Capture stalled after retries • tap Robot to grant new capture");
-                showRecoveryNotification("No fresh images • tap to restart screen capture");
+                if ("No new captured frames".equals(reason)) {
+                    // No frames can simply mean a perfectly static display.
+                    // Keep the user's ON state and previous white baseline.
+                    setVisual(COLOR_NOT_READY,
+                            "No fresh frames • screen may be static; monitoring remains ON");
+                } else {
+                    setVisual(COLOR_NOT_READY,
+                            "Capture failed repeatedly • tap Robot to retry capture");
+                    showRecoveryNotification("Capture errors • tap to restart screen capture");
+                }
             } else {
                 setVisual(COLOR_NOT_READY, "Capture recovery failed • retrying");
             }
