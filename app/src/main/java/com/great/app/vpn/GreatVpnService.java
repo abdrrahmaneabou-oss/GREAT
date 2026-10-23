@@ -45,7 +45,11 @@ public final class GreatVpnService extends VpnService {
         TunnelTransport current = service.transport;
         if (current == null) return lastStartFailure == null ? "STOPPED" : lastStartFailure;
         TransportState state = current.state();
-        if (state == TransportState.FAILED) return "FAILED • tap START VPN to retry";
+        if (state == TransportState.FAILED) {
+            String type = current instanceof AwgTransport ? ((AwgTransport) current).failureType() : null;
+            return "FAILED" + (type == null || type.isEmpty() ? "" : " (" + type + ")")
+                    + " • tap START VPN to retry";
+        }
         return state.name();
     }
     private TargetAppsStore targets;
