@@ -89,6 +89,7 @@ public final class GreatVpnService extends VpnService {
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent == null) return START_NOT_STICKY;
         if (ACTION_STOP.equals(intent.getAction())) {
+            lastStartFailure = null;
             stopEngine();
             stopSelf();
             return START_NOT_STICKY;
@@ -180,7 +181,6 @@ public final class GreatVpnService extends VpnService {
         }
         GlobalRobotOutboundThrottle.instance().setFeatureEnabled(false);
         GreatEngine.instance().reset();
-        lastStartFailure = null;
     }
 
     @Override public void onDestroy() {
