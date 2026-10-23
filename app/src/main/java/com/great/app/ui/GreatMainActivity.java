@@ -1,6 +1,8 @@
 package com.great.app.ui;
 
 import android.app.Activity;
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -53,6 +55,7 @@ public final class GreatMainActivity extends Activity {
     private static final int PICK_CONFIG = 1001;
     private static final int VPN_PERMISSION = 1002;
     private static final int MONITOR_CAPTURE = 1004;
+    private static final int NOTIFICATIONS_PERMISSION = 1007;
     private static final int BG = 0xff0c0e14;
     private static final int SURFACE = 0xff151822;
     private static final int TEXT = 0xfff2f3fa;
@@ -78,8 +81,12 @@ public final class GreatMainActivity extends Activity {
                         && "Monitor stopped".equals(monitorStatus)) {
                     monitorStatus = "Requested ON • screen capture permission required";
                 }
+                String notificationStatus = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                        && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED
+                        ? "\nNOTIFICATIONS: hidden • allow in Android Settings" : "";
                 vpnRuntimeState.setText("VPN: " + GreatVpnService.publicStatus()
-                        + "\nMONITOR: " + monitorStatus);
+                        + "\nMONITOR: " + monitorStatus + notificationStatus);
             }
             handler.postDelayed(this, 1000L);
         }
@@ -141,6 +148,9 @@ public final class GreatMainActivity extends Activity {
         // Do not relaunch the projection permission request from the retained
         // Activity intent after rotation. The pending request is in saved state.
         if (state == null) handleAction(getIntent());
+        if (getIntent() == null || getIntent().getAction() == null) {
+            requestNotificationPermissionOnce();
+        }
     }
 
     private void applySavedPayloadSettings() {
@@ -813,8 +823,23 @@ public final class GreatMainActivity extends Activity {
     }
 
     private void startGreat() {
-        startService(new Intent(this, GreatVpnService.class).setAction(GreatVpnService.ACTION_START));
+        Intent vpn = new Intent(this, GreatVpnService.class)
+                .setAction(GreatVpnService.ACTION_START);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(vpn);
+        else startService(vpn);
         toast("Starting VPN…");
+    }
+
+    private void requestNotificationPermissionOnce() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+                || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                == PackageManager.PERMISSION_GRANTED) return;
+        android.content.SharedPreferences prefs =
+                getSharedPreferences("great_ui_permissions", MODE_PRIVATE);
+        if (prefs.getBoolean("asked_notifications", false)) return;
+        prefs.edit().putBoolean("asked_notifications", true).apply();
+        requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                NOTIFICATIONS_PERMISSION);
     }
 
     private void stopGreat() {
