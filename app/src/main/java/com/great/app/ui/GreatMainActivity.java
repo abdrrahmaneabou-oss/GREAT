@@ -152,7 +152,8 @@ public final class GreatMainActivity extends Activity {
         // Do not relaunch the projection permission request from the retained
         // Activity intent after rotation. The pending request is in saved state.
         if (state == null) handleAction(getIntent());
-        if (getIntent() == null || getIntent().getAction() == null) {
+        String launchAction = getIntent() == null ? null : getIntent().getAction();
+        if (launchAction == null || Intent.ACTION_MAIN.equals(launchAction)) {
             requestNotificationPermissionOnce();
         }
     }
