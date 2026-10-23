@@ -89,7 +89,8 @@ public final class GreatMainActivity extends Activity {
                 String pressure = throttleBypassed <= 0L ? ""
                         : "\nTHROTTLE OVERLOAD: " + throttleBypassed
                           + " packets passed without delay (buffer limit)";
-                vpnRuntimeState.setText("VPN: " + GreatVpnService.publicStatus()
+                vpnRuntimeState.setText("BUILD: white-sensor-v2 • " + getPackageName()
+                        + "\nVPN: " + GreatVpnService.publicStatus()
                         + "\nMONITOR: " + monitorStatus + notificationStatus + pressure);
             }
             handler.postDelayed(this, 1000L);
