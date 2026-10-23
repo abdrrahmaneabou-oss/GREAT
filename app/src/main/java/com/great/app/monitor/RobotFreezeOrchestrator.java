@@ -141,16 +141,16 @@ public final class RobotFreezeOrchestrator {
         }
 
         if (!run) return;
-        GreatEngine.instance().freezeCore().setPeriodicHoldTrigger(true);
-        GlobalRobotOutboundThrottle.instance().startLightForPeriodicFreeze();
         final int chosenDuration = durationMs;
         synchronized (lock) {
+            // Activation and scheduling share the same lock as resetVisualCycle().
+            // An obsolete tick cannot reactivate a hold after monitoring OFF.
             if (!periodicFreezeActive || !FreezeMonitorService.isMonitoringActive()) {
                 periodicFreezeActive = false;
-                GreatEngine.instance().freezeCore().setPeriodicHoldTrigger(false);
-                GlobalRobotOutboundThrottle.instance().cancelActiveCycle();
                 return;
             }
+            GreatEngine.instance().freezeCore().setPeriodicHoldTrigger(true);
+            GlobalRobotOutboundThrottle.instance().startLightForPeriodicFreeze();
             periodicEnd = scheduler.schedule(this::finishPeriodicFreeze,
                     chosenDuration, TimeUnit.MILLISECONDS);
         }
@@ -161,8 +161,8 @@ public final class RobotFreezeOrchestrator {
             periodicEnd = null;
             if (!periodicFreezeActive) return;
             periodicFreezeActive = false;
+            GreatEngine.instance().freezeCore().setPeriodicHoldTrigger(false);
         }
-        GreatEngine.instance().freezeCore().setPeriodicHoldTrigger(false);
         if (FreezeMonitorService.isMonitoringActive()) {
             GlobalRobotOutboundThrottle.instance().finishPeriodicFreezeAndStartPostThrottle();
         } else {
