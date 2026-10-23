@@ -81,6 +81,8 @@ public final class CapabilityOverlayService extends Service {
     private float summaryScale = FreezeEntrySettingsStore.DEFAULT_SUMMARY_SCALE;
     private boolean summaryCollapsed;
     private long renderedSummaryCycle = Long.MIN_VALUE;
+    private int lastRobotColor = Integer.MIN_VALUE;
+    private int lastFreezeColor = Integer.MIN_VALUE;
 
     @Override public void onCreate() {
         super.onCreate();
@@ -256,11 +258,18 @@ public final class CapabilityOverlayService extends Service {
             int color;
             if (FreezeMonitorService.isEditing()) color = EDITING;
             else color = FreezeMonitorService.isMonitoringActive() ? ACTIVE : INACTIVE;
-            robotView.setBackground(circleBg(color));
+            if (color != lastRobotColor) {
+                robotView.setBackground(circleBg(color));
+                lastRobotColor = color;
+            }
         }
         if (freezeView != null) {
             boolean active = GreatEngine.instance().capabilities().snapshot().enabled(Capability.FREEZE);
-            freezeView.setBackground(circleBg(active ? ACTIVE : INACTIVE));
+            int color = active ? ACTIVE : INACTIVE;
+            if (color != lastFreezeColor) {
+                freezeView.setBackground(circleBg(color));
+                lastFreezeColor = color;
+            }
         }
     }
 
@@ -359,8 +368,11 @@ public final class CapabilityOverlayService extends Service {
         Point screen = screenSize();
         int targetX = robotParams.x + robotParams.width - size / 2;
         int targetY = robotParams.y - size / 2;
-        summaryExpandParams.x = clamp(targetX, 0, Math.max(0, screen.x - size));
-        summaryExpandParams.y = clamp(targetY, 0, Math.max(0, screen.y - size));
+        int x = clamp(targetX, 0, Math.max(0, screen.x - size));
+        int y = clamp(targetY, 0, Math.max(0, screen.y - size));
+        if (summaryExpandParams.x == x && summaryExpandParams.y == y) return;
+        summaryExpandParams.x = x;
+        summaryExpandParams.y = y;
         try { windowManager.updateViewLayout(summaryExpandView, summaryExpandParams); } catch (Throwable ignored) { }
     }
 
@@ -625,6 +637,8 @@ public final class CapabilityOverlayService extends Service {
         packetSummaryParams = null;
         summaryExpandParams = null;
         renderedSummaryCycle = Long.MIN_VALUE;
+        lastRobotColor = Integer.MIN_VALUE;
+        lastFreezeColor = Integer.MIN_VALUE;
     }
 
     @Override public void onDestroy() { removeOverlay(); super.onDestroy(); }
