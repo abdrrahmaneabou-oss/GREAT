@@ -249,10 +249,11 @@ public final class GreatVpnService extends VpnService {
                 engine.freezeCore().setRampProfile(0, 0, 100, 100, 100, 100);
             }
             RobotFreezeOrchestrator.instance().setSkipPercent(entry.robotSkipPercent());
-            ReleaseSettingsStore release = new ReleaseSettingsStore(this);
-            engine.freezeCore().setReleaseDropRange(release.dropMinPercent(), release.dropMaxPercent());
-            engine.freezeCore().setReleaseBurstRange(release.burstMin(), release.burstMax());
-            engine.freezeCore().setReleaseDelayRangeMs(release.delayMinMs(), release.delayMaxMs());
+            ReleaseSettingsStore.Snapshot release =
+                    new ReleaseSettingsStore(this).snapshot();
+            engine.freezeCore().setReleaseRanges(release.dropMin(), release.dropMax(),
+                    release.burstMin(), release.burstMax(),
+                    release.delayMinMs(), release.delayMaxMs());
             engine.freezeCore().setReleaseDropEnabled(release.dropEnabled());
             engine.freezeCore().setReleaseBurstEnabled(release.burstEnabled());
             engine.freezeCore().setReleaseDelayEnabled(release.delayEnabled());
