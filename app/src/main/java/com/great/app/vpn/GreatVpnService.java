@@ -201,7 +201,9 @@ public final class GreatVpnService extends VpnService {
     }
 
     private void startVpnForeground(String details) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // systemExempted is an Android 14+ type; older releases must not
+            // receive an unsupported foreground-service-type bit.
             startForeground(NOTIFICATION_ID, vpnNotification(details),
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED);
         } else {
