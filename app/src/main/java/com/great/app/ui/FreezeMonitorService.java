@@ -415,13 +415,15 @@ public final class FreezeMonitorService extends Service {
         long elapsed = visualFiredAtNanos == 0L ? 0L
                 : Math.max(0L, TimeUnit.NANOSECONDS.toMillis(
                         System.nanoTime() - visualFiredAtNanos));
-        mainHandler.postDelayed(freezeTimeout, Math.max(0L,
+        // The capture thread is independent from Activity layout and scroll work.
+        // The FreezeCore deadline remains the final authoritative packet gate.
+        captureHandler.postDelayed(freezeTimeout, Math.max(0L,
                 settings.maxFreezeMillis() - elapsed));
     }
 
     private void cancelFreezeTimeout() {
         timeoutSerial.incrementAndGet();
-        if (freezeTimeout != null) mainHandler.removeCallbacks(freezeTimeout);
+        if (freezeTimeout != null) captureHandler.removeCallbacks(freezeTimeout);
         freezeTimeout = null;
     }
 
