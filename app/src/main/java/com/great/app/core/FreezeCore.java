@@ -488,7 +488,7 @@ public final class FreezeCore implements AutoCloseable {
     }
 
     /** Monotonic deadline enforced on the packet path, independently of the UI Handler. */
-    public void setVisualFreezeDeadlineMillis(int durationMs) {
+    public void setVisualFreezeDeadlineMillis(long durationMs) {
         if (durationMs <= 0) throw new IllegalArgumentException("durationMs must be positive");
         synchronized (lock) {
             if (visualMonitorHold) {
