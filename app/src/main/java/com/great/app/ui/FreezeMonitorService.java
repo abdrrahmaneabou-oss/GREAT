@@ -49,6 +49,7 @@ public final class FreezeMonitorService extends Service {
     public static final String ACTION_MONITORING_OFF = "com.great.app.action.FREEZE_MONITORING_OFF";
     public static final String EXTRA_RESULT_CODE = "projection_result_code";
     public static final String EXTRA_RESULT_DATA = "projection_result_data";
+    public static final String EXTRA_EDIT_AFTER_START = "edit_after_projection_start";
 
     private static final int NOTIFICATION_ID = 4107;
     private static final String CHANNEL_ID = "great_visual_monitor";
@@ -122,6 +123,7 @@ public final class FreezeMonitorService extends Service {
             }
             settings.setEnabled(true);
             startMonitor(resultCode, resultData);
+            if (intent.getBooleanExtra(EXTRA_EDIT_AFTER_START, false) && running) enterEditMode();
             return START_STICKY;
         }
         if (ACTION_MONITORING_OFF.equals(action)) {
@@ -147,6 +149,9 @@ public final class FreezeMonitorService extends Service {
             settings.setMonitoringEnabled(true);
             leaveEditAndArm();
             return START_STICKY;
+        }
+        if (!running && settings.monitoringEnabled()) {
+            publicStatus = "Monitoring requested • screen capture permission required";
         }
         return running ? START_STICKY : START_NOT_STICKY;
     }
