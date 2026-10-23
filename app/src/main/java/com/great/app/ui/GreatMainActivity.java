@@ -94,9 +94,19 @@ public final class GreatMainActivity extends Activity {
     private boolean monitorCapturePending;
     private boolean monitorEditAfterStart;
     private boolean monitorStartActiveAfterCapture;
+    private static final String STATE_MONITOR_ACTIVE = "great_pending_monitor_active";
+    private static final String STATE_MONITOR_EDIT = "great_pending_monitor_edit";
+    private static final String STATE_MONITOR_CAPTURE = "great_pending_capture";
+    private static final String STATE_OVERLAY_PENDING = "great_pending_overlay";
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        if (state != null) {
+            monitorStartActiveAfterCapture = state.getBoolean(STATE_MONITOR_ACTIVE, false);
+            monitorEditAfterStart = state.getBoolean(STATE_MONITOR_EDIT, false);
+            monitorCapturePending = state.getBoolean(STATE_MONITOR_CAPTURE, false);
+            overlayPending = state.getBoolean(STATE_OVERLAY_PENDING, false);
+        }
         targetStore = new TargetAppsStore(this);
         monitorSettings = new MonitorSettingsStore(this);
         capabilitySettings = new CapabilitySettingsStore(this);
@@ -151,6 +161,14 @@ public final class GreatMainActivity extends Activity {
         } else if (ACTION_REQUEST_MONITOR_EDIT.equals(intent.getAction())) {
             handler.post(() -> requestMonitorCapture(false, true));
         }
+    }
+
+    @Override protected void onSaveInstanceState(Bundle outState) {
+        outState.putBoolean(STATE_MONITOR_ACTIVE, monitorStartActiveAfterCapture);
+        outState.putBoolean(STATE_MONITOR_EDIT, monitorEditAfterStart);
+        outState.putBoolean(STATE_MONITOR_CAPTURE, monitorCapturePending);
+        outState.putBoolean(STATE_OVERLAY_PENDING, overlayPending);
+        super.onSaveInstanceState(outState);
     }
 
     @Override protected void onResume() {
@@ -744,8 +762,8 @@ public final class GreatMainActivity extends Activity {
 
     private void ensureMonitorSessionForCircles() {
         if (FreezeMonitorService.isRunning()) return;
-        monitorSettings.setMonitoringEnabled(false);
-        monitorStartActiveAfterCapture = false;
+        // Showing controls must not silently erase an existing user request for monitoring.
+        monitorStartActiveAfterCapture = monitorSettings.monitoringEnabled();
         monitorEditAfterStart = false;
         launchCapturePrompt();
     }
