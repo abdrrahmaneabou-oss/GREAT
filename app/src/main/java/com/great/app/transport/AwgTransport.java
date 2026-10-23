@@ -50,6 +50,9 @@ public final class AwgTransport implements TunnelTransport {
     private final AtomicLong droppedPackets = new AtomicLong();
 
     private volatile TransportState state = TransportState.STOPPED;
+    // Class only: avoid exposing potentially sensitive VPN configuration in diagnostics.
+    private volatile String failureType;
+    public String failureType() { return failureType; }
     private volatile boolean running;
     private int handle = -1;
     private ParcelFileDescriptor realTun;
@@ -66,6 +69,7 @@ public final class AwgTransport implements TunnelTransport {
     public synchronized void start(VpnService vpnService, AwgConfig config, byte[] rawConfig) throws Exception {
         if (running || handle >= 0 || state == TransportState.CONNECTED || state == TransportState.CONNECTING) return;
 
+        failureType = null;
         state = TransportState.STARTING;
         int startedHandle = -1;
         try {
@@ -121,6 +125,7 @@ public final class AwgTransport implements TunnelTransport {
             state = TransportState.CONNECTED;
             startPumps();
         } catch (Throwable failure) {
+            failureType = failure.getClass().getSimpleName();
             running = false;
             capabilities.detach(capabilitySink);
             globalRobotThrottle.detach(globalThrottleSink);
@@ -219,8 +224,9 @@ public final class AwgTransport implements TunnelTransport {
     }
 
     /** Keep Android's TUN alive on an internal failure so traffic fails closed. */
-    private synchronized void failClosed(Throwable ignored) {
+    private synchronized void failClosed(Throwable failure) {
         if (!running) return;
+        failureType = failure.getClass().getSimpleName();
         running = false;
         capabilities.detach(capabilitySink);
         globalRobotThrottle.detach(globalThrottleSink);
