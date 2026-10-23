@@ -227,6 +227,7 @@ public final class FreezeMonitorService extends Service {
         if (settings.monitoringEnabled()) {
             monitoringActive = true;
             setVisual(COLOR_WAITING, "Waiting for white");
+            RobotFreezeOrchestrator.instance().onMonitoringResumed();
         } else {
             monitoringActive = false;
             GreatEngine.instance().freezeCore().setHoldTrigger(false);
@@ -327,6 +328,7 @@ public final class FreezeMonitorService extends Service {
                 monitoringActive = true;
                 GreatEngine.instance().freezeCore().setHoldTrigger(false);
                 setVisual(COLOR_WAITING, "Display changed • waiting for white");
+                RobotFreezeOrchestrator.instance().onMonitoringResumed();
             }
         } catch (Throwable e) {
             setNotReady("Display resize failed");
@@ -443,6 +445,7 @@ public final class FreezeMonitorService extends Service {
         monitoringActive = true;
         lockOverlay();
         resetDetector("Waiting for white");
+        RobotFreezeOrchestrator.instance().onMonitoringResumed();
     }
 
     private void enterEditMode() {
@@ -467,6 +470,7 @@ public final class FreezeMonitorService extends Service {
         dragState = null;
         lockOverlay();
         resetDetector("Waiting for white");
+        RobotFreezeOrchestrator.instance().onMonitoringResumed();
     }
 
     private void resetDetector(String status) {
