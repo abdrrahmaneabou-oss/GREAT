@@ -37,6 +37,7 @@ import com.great.app.monitor.PixelTriggerMonitorEngine;
 import com.great.app.monitor.RobotFreezeOrchestrator;
 
 import java.nio.ByteBuffer;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** Tiny PixelTrigger-style visual sensor. Its locked overlay never consumes game touches. */
@@ -46,6 +47,7 @@ public final class FreezeMonitorService extends Service {
     public static final String ACTION_LOCK = "com.great.app.action.LOCK_FREEZE_MONITOR";
     public static final String ACTION_STOP = "com.great.app.action.STOP_FREEZE_MONITOR";
     public static final String ACTION_MONITORING_ON = "com.great.app.action.FREEZE_MONITORING_ON";
+    public static final String ACTION_REFRESH_TIMEOUT = "com.great.app.action.REFRESH_ROBOT_TIMEOUT";
     public static final String ACTION_MONITORING_OFF = "com.great.app.action.FREEZE_MONITORING_OFF";
     public static final String EXTRA_RESULT_CODE = "projection_result_code";
     public static final String EXTRA_RESULT_DATA = "projection_result_data";
@@ -82,6 +84,7 @@ public final class FreezeMonitorService extends Service {
     private volatile int monitorColor = COLOR_NOT_READY;
     private Runnable freezeTimeout;
     private final AtomicLong timeoutSerial = new AtomicLong();
+    private volatile long visualFiredAtNanos;
     private volatile int captureWidth;
     private volatile int captureHeight;
     private volatile boolean captureResizePending;
@@ -148,6 +151,18 @@ public final class FreezeMonitorService extends Service {
             settings.setMonitoringEnabled(true);
             resumeMonitoring();
             return START_STICKY;
+        }
+        if (ACTION_REFRESH_TIMEOUT.equals(action)) {
+            if (running && monitoringActive && !editing) {
+                synchronized (engine) {
+                    if (engine.state() == PixelTriggerMonitorEngine.State.FIRED) {
+                        GreatEngine.instance().freezeCore()
+                                .setVisualFreezeDeadlineMillis(settings.maxFreezeMillis());
+                        scheduleFreezeTimeout();
+                    }
+                }
+            }
+            return running ? START_STICKY : START_NOT_STICKY;
         }
         if (ACTION_EDIT.equals(action)) {
             if (!running) return START_NOT_STICKY;
@@ -362,16 +377,19 @@ public final class FreezeMonitorService extends Service {
         if (!running || !monitoringActive || editing || !settings.monitoringEnabled()) return;
         switch (state) {
             case WAITING_FOR_WHITE -> {
+                visualFiredAtNanos = 0L;
                 cancelFreezeTimeout();
                 GreatEngine.instance().freezeCore().setHoldTrigger(false);
                 setVisual(COLOR_WAITING, "Waiting for white");
             }
             case ARMED -> {
+                visualFiredAtNanos = 0L;
                 cancelFreezeTimeout();
                 GreatEngine.instance().freezeCore().setHoldTrigger(false);
                 setVisual(COLOR_ARMED, "ARMED • white detected • Freeze OFF");
             }
             case FIRED -> {
+                visualFiredAtNanos = System.nanoTime();
                 GreatEngine.instance().freezeCore().setHoldTrigger(true);
                 GreatEngine.instance().freezeCore().setVisualFreezeDeadlineMillis(settings.maxFreezeMillis());
                 setVisual(COLOR_FIRED, "FIRED • white lost • Freeze ON");
@@ -394,7 +412,11 @@ public final class FreezeMonitorService extends Service {
             GreatEngine.instance().freezeCore().setHoldTrigger(false);
             setVisual(COLOR_WAITING, "Freeze limit reached • waiting for white");
         };
-        mainHandler.postDelayed(freezeTimeout, settings.maxFreezeMillis());
+        long elapsed = visualFiredAtNanos == 0L ? 0L
+                : Math.max(0L, TimeUnit.NANOSECONDS.toMillis(
+                        System.nanoTime() - visualFiredAtNanos));
+        mainHandler.postDelayed(freezeTimeout, Math.max(0L,
+                settings.maxFreezeMillis() - elapsed));
     }
 
     private void cancelFreezeTimeout() {
