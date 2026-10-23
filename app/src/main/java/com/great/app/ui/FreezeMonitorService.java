@@ -661,7 +661,12 @@ public final class FreezeMonitorService extends Service {
                 if (now - lastNotificationUpdateNanos > TimeUnit.SECONDS.toNanos(2)) {
                     lastNotificationUpdateNanos = now;
                     NotificationManager manager = getSystemService(NotificationManager.class);
-                    if (manager != null) manager.notify(NOTIFICATION_ID, buildNotification());
+                    if (manager != null) {
+                        try { manager.notify(NOTIFICATION_ID, buildNotification()); }
+                        catch (RuntimeException ignored) {
+                            // UI notification updates cannot be allowed to kill capture.
+                        }
+                    }
                 }
             }
         });
