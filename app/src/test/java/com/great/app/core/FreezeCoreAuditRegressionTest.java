@@ -100,4 +100,47 @@ public final class FreezeCoreAuditRegressionTest {
         }
     }
 
+
+    @Test public void shorteningTimeoutMidCycleExpiresFromOriginalStart() throws Exception {
+        try (Fixture f = new Fixture()) {
+            f.core.setRampProfile(0, 0, 100, 100, 100, 100);
+            f.core.setHoldTrigger(true);
+            f.core.setVisualFreezeDeadlineMillis(1000);
+            Thread.sleep(60);
+            f.core.setVisualFreezeDeadlineMillis(20);
+            assertEquals(PacketDecision.PASS, f.decide());
+            assertFalse(f.core.holdTriggerActive());
+        }
+    }
+
+    @Test public void extendingTimeoutDoesNotRestartTheClock() throws Exception {
+        try (Fixture f = new Fixture()) {
+            f.core.setRampProfile(0, 0, 100, 100, 100, 100);
+            f.core.setHoldTrigger(true);
+            f.core.setVisualFreezeDeadlineMillis(100);
+            Thread.sleep(50);
+            f.core.setVisualFreezeDeadlineMillis(140);
+            assertEquals(PacketDecision.HOLD, f.decide());
+            Thread.sleep(115);
+            assertEquals(PacketDecision.PASS, f.decide());
+        }
+    }
+
+    @Test public void historyMarksMixedPayloadRangesInsteadOfClaimingOneRange() throws Exception {
+        try (Fixture f = new Fixture()) {
+            java.util.concurrent.CountDownLatch completed =
+                    new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.atomic.AtomicReference<FreezeCore.CycleStats> recorded =
+                    new java.util.concurrent.atomic.AtomicReference<>();
+            f.core.setCycleListener(stats -> { recorded.set(stats); completed.countDown(); });
+            f.core.setPayloadRange(20, 50);
+            f.core.setHoldTrigger(true);
+            f.core.setPayloadRange(120, 150);
+            f.core.setHoldTrigger(false);
+            assertTrue(completed.await(2, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(20, recorded.get().payloadMin());
+            assertEquals(50, recorded.get().payloadMax());
+            assertTrue(recorded.get().payloadRangeChanged());
+        }
+    }
 }
