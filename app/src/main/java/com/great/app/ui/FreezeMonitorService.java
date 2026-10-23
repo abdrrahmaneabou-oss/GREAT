@@ -335,9 +335,11 @@ public final class FreezeMonitorService extends Service {
                     || !settings.monitoringEnabled()) return;
             PixelTriggerMonitorEngine.Sample sample = sampleImage(image);
             if (sample != null) {
+                boolean justRecovered = frameFailures > 0 || surfaceRecoveryAttempts > 0;
                 frameFailures = 0;
                 surfaceRecoveryAttempts = 0;
                 lastValidFrameNanos = System.nanoTime();
+                if (justRecovered) mainHandler.post(this::clearRecoveryNotification);
                 synchronized (engine) {
                     engine.process(sample);
                     if (monitorColor == COLOR_NOT_READY) {
@@ -461,7 +463,7 @@ public final class FreezeMonitorService extends Service {
             // discard an ARMED white baseline merely because the screen was
             // static: otherwise a later white->dark transition would be missed.
             if (!CaptureLivenessPolicy.preserveWhiteBaseline(
-                    "No new captured frames".equals(reason) ? false : true)) {
+                    !"No new captured frames".equals(reason))) {
                 cancelFreezeTimeout();
                 GreatEngine.instance().freezeCore().setHoldTrigger(false);
                 synchronized (engine) { engine.reset(); }
