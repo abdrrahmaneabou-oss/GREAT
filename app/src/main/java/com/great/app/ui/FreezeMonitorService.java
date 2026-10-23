@@ -34,6 +34,7 @@ import android.view.WindowManager;
 
 import com.great.app.config.MonitorSettingsStore;
 import com.great.app.core.GreatEngine;
+import com.great.app.monitor.CaptureLivenessPolicy;
 import com.great.app.monitor.PixelTriggerMonitorEngine;
 import com.great.app.monitor.RobotFreezeOrchestrator;
 
@@ -60,8 +61,7 @@ public final class FreezeMonitorService extends Service {
     private static final int RECOVERY_NOTIFICATION_ID = 4109;
     private volatile long lastNotificationUpdateNanos;
     private static final long HEALTH_INTERVAL_MS = 3_000L;
-    private static final long STALE_CAPTURE_NS = TimeUnit.SECONDS.toNanos(14);
-    private static final int MAX_SURFACE_REBIND_ATTEMPTS = 3;
+
     private static final int COLOR_WAITING = Color.rgb(255, 184, 77);
     private static final int COLOR_ARMED = Color.rgb(60, 220, 120);
     private static final int COLOR_FIRED = Color.rgb(255, 80, 95);
@@ -109,12 +109,12 @@ public final class FreezeMonitorService extends Service {
                         && settings.enabled() && settings.monitoringEnabled()
                         && projection != null && virtualDisplay != null && !captureResizePending) {
                     long idleNs = System.nanoTime() - lastImageFrameNanos;
-                    if ((frameFailures >= 4 || idleNs > STALE_CAPTURE_NS)
-                            && surfaceRecoveryAttempts < MAX_SURFACE_REBIND_ATTEMPTS
-                            && !surfaceRecoveryPending) {
+                    if (CaptureLivenessPolicy.shouldRecover(
+                            idleNs, frameFailures, surfaceRecoveryAttempts, surfaceRecoveryPending)) {
                         surfaceRecoveryPending = true;
                         mainHandler.post(() -> recoverCaptureSurface(
-                                frameFailures >= 4 ? "Repeated unusable images" : "No new captured frames"));
+                                frameFailures >= CaptureLivenessPolicy.FAILURE_TRIGGER
+                                        ? "Repeated unusable images" : "No new captured frames"));
                     }
                 }
             } finally {
@@ -411,7 +411,7 @@ public final class FreezeMonitorService extends Service {
         if (shuttingDown || !running || !monitoringActive || editing || captureResizePending
                 || !settings.enabled() || !settings.monitoringEnabled()
                 || projection == null || virtualDisplay == null
-                || surfaceRecoveryAttempts >= MAX_SURFACE_REBIND_ATTEMPTS) return;
+                || surfaceRecoveryAttempts >= CaptureLivenessPolicy.MAX_RECOVERY_ATTEMPTS) return;
 
         surfaceRecoveryAttempts++;
         ImageReader replacement = null;
@@ -440,7 +440,8 @@ public final class FreezeMonitorService extends Service {
             // An unchanged image may legitimately produce no frames. Do not
             // discard an ARMED white baseline merely because the screen was
             // static: otherwise a later white->dark transition would be missed.
-            if (!"No new captured frames".equals(reason)) {
+            if (!CaptureLivenessPolicy.preserveWhiteBaseline(
+                    "No new captured frames".equals(reason) ? false : true)) {
                 cancelFreezeTimeout();
                 GreatEngine.instance().freezeCore().setHoldTrigger(false);
                 synchronized (engine) { engine.reset(); }
@@ -450,7 +451,7 @@ public final class FreezeMonitorService extends Service {
             setVisual(COLOR_NOT_READY, reason + " • surface refreshed, checking frames");
         } catch (Throwable e) {
             lastImageFrameNanos = System.nanoTime();
-            if (surfaceRecoveryAttempts >= MAX_SURFACE_REBIND_ATTEMPTS) {
+            if (surfaceRecoveryAttempts >= CaptureLivenessPolicy.MAX_RECOVERY_ATTEMPTS) {
                 if ("No new captured frames".equals(reason)) {
                     // No frames can simply mean a perfectly static display.
                     // Keep the user's ON state and previous white baseline.
