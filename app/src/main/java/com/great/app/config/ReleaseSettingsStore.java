@@ -2,6 +2,7 @@ package com.great.app.config;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import java.util.Map;
 
 import com.great.app.core.FreezeCore;
 
@@ -119,6 +120,47 @@ public final class ReleaseSettingsStore {
         prefs.edit().putInt(DROP_MIN, dropMin).putInt(DROP_MAX, dropMax)
                 .putInt(BURST_MIN, burstMin).putInt(BURST_MAX, burstMax)
                 .putInt(DELAY_MIN_MS, delayMin).putInt(DELAY_MAX_MS, delayMax).apply();
+    }
+
+    /** A consistent snapshot of all release values, even during a simultaneous save. */
+    public record Snapshot(boolean dropEnabled, boolean burstEnabled, boolean delayEnabled,
+                           int dropMin, int dropMax, int burstMin, int burstMax,
+                           int delayMinMs, int delayMaxMs) { }
+
+    public Snapshot snapshot() {
+        Map<String, ?> data = prefs.getAll();
+        int minDrop = prefInt(data, DROP_MIN, DEFAULT_DROP_MIN_PERCENT);
+        int maxDrop = prefInt(data, DROP_MAX, DEFAULT_DROP_MAX_PERCENT);
+        int minBurst = prefInt(data, BURST_MIN, DEFAULT_BURST_MIN);
+        int maxBurst = prefInt(data, BURST_MAX, DEFAULT_BURST_MAX);
+        int minDelay = prefInt(data, DELAY_MIN_MS, DEFAULT_DELAY_MIN_MS);
+        int maxDelay = prefInt(data, DELAY_MAX_MS, DEFAULT_DELAY_MAX_MS);
+        if (!validDropRange(minDrop, maxDrop)) {
+            minDrop = DEFAULT_DROP_MIN_PERCENT;
+            maxDrop = DEFAULT_DROP_MAX_PERCENT;
+        }
+        if (!validBurstRange(minBurst, maxBurst)) {
+            minBurst = DEFAULT_BURST_MIN;
+            maxBurst = DEFAULT_BURST_MAX;
+        }
+        if (!validDelayRange(minDelay, maxDelay)) {
+            minDelay = DEFAULT_DELAY_MIN_MS;
+            maxDelay = DEFAULT_DELAY_MAX_MS;
+        }
+        return new Snapshot(prefBool(data, DROP_ENABLED, true),
+                prefBool(data, BURST_ENABLED, true),
+                prefBool(data, DELAY_ENABLED, true),
+                minDrop, maxDrop, minBurst, maxBurst, minDelay, maxDelay);
+    }
+
+    private static int prefInt(Map<String, ?> data, String key, int fallback) {
+        Object value = data.get(key);
+        return value instanceof Integer ? (Integer) value : fallback;
+    }
+
+    private static boolean prefBool(Map<String, ?> data, String key, boolean fallback) {
+        Object value = data.get(key);
+        return value instanceof Boolean ? (Boolean) value : fallback;
     }
 
     private int rawDropMin() { return prefs.getInt(DROP_MIN, DEFAULT_DROP_MIN_PERCENT); }
