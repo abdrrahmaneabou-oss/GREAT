@@ -213,7 +213,12 @@ public final class GreatVpnService extends VpnService {
 
     private void updateVpnNotification(String details) {
         NotificationManager manager = getSystemService(NotificationManager.class);
-        if (manager != null) manager.notify(NOTIFICATION_ID, vpnNotification(details));
+        if (manager != null) {
+            try { manager.notify(NOTIFICATION_ID, vpnNotification(details)); }
+            catch (RuntimeException ignored) {
+                // Updating notification text must never shut down an already healthy VPN.
+            }
+        }
     }
 
     private synchronized void startEngine() {
