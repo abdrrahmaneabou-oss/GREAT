@@ -67,6 +67,11 @@ public final class FreezeMonitorService extends Service {
     private static final int COLOR_FIRED = Color.rgb(255, 80, 95);
     private static final int COLOR_PAUSED = Color.rgb(145, 150, 160);
     private static final int COLOR_NOT_READY = Color.rgb(220, 85, 255);
+    // Keep the colored marker OUTSIDE the five capture probe pixels. The original
+    // 0.30 mm ring with a >=1dp stroke painted across its own sampled pixels.
+    // MediaProjection includes overlays, so that painted the sensor yellow.
+    private static final float RETICLE_RADIUS_DP = 8f;
+    private static final float RETICLE_STROKE_DP = 1.25f;
 
     private static volatile boolean running;
     private static volatile boolean editing;
@@ -930,13 +935,16 @@ public final class FreezeMonitorService extends Service {
         MonitorView() {
             super(FreezeMonitorService.this);
             stroke.setStyle(Paint.Style.STROKE);
-            stroke.setStrokeWidth(Math.max(1f, getResources().getDisplayMetrics().density));
+            stroke.setStrokeWidth(RETICLE_STROKE_DP * getResources().getDisplayMetrics().density);
         }
 
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             stroke.setColor(monitorColor);
-            float radius = Math.max(0.5f, sensorDiameterPx() / 2f);
+            float density = getResources().getDisplayMetrics().density;
+            float radius = Math.max(RETICLE_RADIUS_DP * density,
+                    sensorDiameterPx() / 2f + 4f * density);
+            // Transparent center: no drawn pixels inside the probe footprint.
             canvas.drawCircle(getWidth() / 2f, getHeight() / 2f, radius, stroke);
         }
     }
