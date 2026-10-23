@@ -19,11 +19,15 @@ import com.great.app.config.AwgConfig;
 import com.great.app.config.AwgConfigParser;
 import com.great.app.config.CapabilitySettingsStore;
 import com.great.app.config.FreezeHistoryStore;
+import com.great.app.config.FreezeEntrySettingsStore;
+import com.great.app.config.ReleaseSettingsStore;
 import com.great.app.config.SecureConfigStore;
 import com.great.app.core.GreatEngine;
+import com.great.app.monitor.RobotFreezeOrchestrator;
 import com.great.app.transport.AwgTransport;
 import com.great.app.transport.GlobalRobotOutboundThrottle;
 import com.great.app.transport.TunnelTransport;
+import com.great.app.transport.TransportState;
 
 import java.util.Arrays;
 
@@ -81,7 +85,12 @@ public final class GreatVpnService extends VpnService {
     }
 
     private synchronized void startEngine() {
-        if (transport != null) return;
+        if (transport != null) {
+            if (transport.state() != TransportState.FAILED
+                    && transport.state() != TransportState.STOPPED) return;
+            transport.close();
+            transport = null;
+        }
         byte[] raw = null;
         try {
             GreatEngine engine = GreatEngine.instance();
@@ -95,6 +104,25 @@ public final class GreatVpnService extends VpnService {
                     tuning.freezePayloadMinFrom(), tuning.freezePayloadMinTo(),
                     tuning.freezePayloadMaxFrom(), tuning.freezePayloadMaxTo());
             engine.freezeCore().setRandomPayloadRangeEnabled(tuning.freezePayloadRandomEnabled());
+
+            // Load persisted settings before the engine can receive any packet; no Activity required.
+            FreezeEntrySettingsStore entry = new FreezeEntrySettingsStore(this);
+            if (entry.rampEnabled()) {
+                engine.freezeCore().setRampProfile(entry.rampDurationMinMs(),
+                        entry.rampDurationMaxMs(), entry.rampStage1MinPercent(),
+                        entry.rampStage1MaxPercent(), entry.rampStage2MinPercent(),
+                        entry.rampStage2MaxPercent());
+            } else {
+                engine.freezeCore().setRampProfile(0, 0, 100, 100, 100, 100);
+            }
+            RobotFreezeOrchestrator.instance().setSkipPercent(entry.robotSkipPercent());
+            ReleaseSettingsStore release = new ReleaseSettingsStore(this);
+            engine.freezeCore().setReleaseDropRange(release.dropMinPercent(), release.dropMaxPercent());
+            engine.freezeCore().setReleaseBurstRange(release.burstMin(), release.burstMax());
+            engine.freezeCore().setReleaseDelayRangeMs(release.delayMinMs(), release.delayMaxMs());
+            engine.freezeCore().setReleaseDropEnabled(release.dropEnabled());
+            engine.freezeCore().setReleaseBurstEnabled(release.burstEnabled());
+            engine.freezeCore().setReleaseDelayEnabled(release.delayEnabled());
 
             // Legacy FreezeCore outbound throttle is not controlled by these Robot cards.
             engine.freezeCore().setOutboundThrottleEnabled(false);
