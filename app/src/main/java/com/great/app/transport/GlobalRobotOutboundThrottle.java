@@ -73,18 +73,23 @@ public final class GlobalRobotOutboundThrottle {
     private LightOwner lightOwner = LightOwner.NONE;
     private boolean lightWhiteLinkedForCycle;
     private long lightEndsNanos;
+    private long lightStartedNanos;
     private long lightDurationNanos;
     private long lightStartDelayNanos;
     private long lightPreviousDelayNanos;
     private boolean lightFirstDecision;
 
     private boolean postActive;
+    private boolean postVisualOwner;
     private long postEndsNanos;
     private long postDurationNanos;
     private long postStartDelayNanos;
     private long postPreviousDelayNanos;
 
     private GlobalRobotOutboundThrottle(Random rng) { this.rng = Objects.requireNonNull(rng); }
+    static GlobalRobotOutboundThrottle forTests(Random rng) {
+        return new GlobalRobotOutboundThrottle(rng);
+    }
     public static GlobalRobotOutboundThrottle instance() { return INSTANCE; }
 
     public void setFeatureEnabled(boolean enabled) {
@@ -116,7 +121,21 @@ public final class GlobalRobotOutboundThrottle {
 
     /** Visual Robot only: when enabled, white return ends light throttle and duration is ignored. */
     public void setLightStopOnWhiteReturn(boolean enabled) {
-        synchronized (lock) { lightStopOnWhiteReturn = enabled; }
+        synchronized (lock) {
+            if (lightStopOnWhiteReturn == enabled) return;
+            lightStopOnWhiteReturn = enabled;
+            if (lightActive && lightOwner == LightOwner.VISUAL) {
+                // The switch is live. Keep this cycle's selected duration and
+                // its original start instant; do not create an extra full window.
+                lightWhiteLinkedForCycle = enabled;
+                if (enabled) {
+                    lightEndsNanos = 0L;
+                } else {
+                    lightEndsNanos = lightStartedNanos + lightDurationNanos;
+                    expireTimedPhasesLocked(System.nanoTime());
+                }
+            }
+        }
     }
 
     public boolean lightStopOnWhiteReturn() { synchronized (lock) { return lightStopOnWhiteReturn; } }
@@ -146,7 +165,7 @@ public final class GlobalRobotOutboundThrottle {
     public void setVisualPostEnabled(boolean enabled) {
         synchronized (lock) {
             visualPostEnabled = enabled;
-            if (!enabled) clearPostLocked();
+            if (!enabled && postVisualOwner) clearPostLocked();
         }
     }
 
@@ -217,20 +236,17 @@ public final class GlobalRobotOutboundThrottle {
         long now = System.nanoTime();
 
         lightActive = true;
+        lightStartedNanos = now;
         lightOwner = owner;
         lightWhiteLinkedForCycle = owner == LightOwner.VISUAL && lightStopOnWhiteReturn;
         lightStartDelayNanos = TimeUnit.MILLISECONDS.toNanos(chosenStartMs);
         lightPreviousDelayNanos = lightStartDelayNanos;
         lightFirstDecision = true;
 
-        if (lightWhiteLinkedForCycle) {
-            // Duration is deliberately ignored; white return is the stop event.
-            lightDurationNanos = 0L;
-            lightEndsNanos = 0L;
-        } else {
-            lightDurationNanos = TimeUnit.MILLISECONDS.toNanos(chosenDurationMs);
-            lightEndsNanos = now + lightDurationNanos;
-        }
+        // Always retain the sampled duration so changing the link switch while
+        // the visual cycle runs can apply immediately without random re-sampling.
+        lightDurationNanos = TimeUnit.MILLISECONDS.toNanos(chosenDurationMs);
+        lightEndsNanos = lightWhiteLinkedForCycle ? 0L : now + lightDurationNanos;
         return true;
     }
 
@@ -339,6 +355,7 @@ public final class GlobalRobotOutboundThrottle {
         int durationMs = randomInclusiveLocked(durationMinMs, durationMaxMs);
         long now = System.nanoTime();
         postActive = true;
+        postVisualOwner = visual;
         postDurationNanos = TimeUnit.MILLISECONDS.toNanos(durationMs);
         postEndsNanos = now + postDurationNanos;
         postStartDelayNanos = TimeUnit.MILLISECONDS.toNanos(startDelayMs);
@@ -390,6 +407,7 @@ public final class GlobalRobotOutboundThrottle {
         lightOwner = LightOwner.NONE;
         lightWhiteLinkedForCycle = false;
         lightEndsNanos = 0L;
+        lightStartedNanos = 0L;
         lightDurationNanos = 0L;
         lightStartDelayNanos = 0L;
         lightPreviousDelayNanos = 0L;
@@ -398,6 +416,7 @@ public final class GlobalRobotOutboundThrottle {
 
     private void clearPostLocked() {
         postActive = false;
+        postVisualOwner = false;
         postEndsNanos = 0L;
         postDurationNanos = 0L;
         postStartDelayNanos = 0L;
