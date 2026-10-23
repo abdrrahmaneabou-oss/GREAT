@@ -164,6 +164,7 @@ public final class FreezeMonitorService extends Service {
             if (resultCode != Activity.RESULT_OK || resultData == null) {
                 captureSessionEnded = true;
                 setNotReady("Screen capture permission required");
+                showRecoveryNotification("Tap to grant screen capture access");
                 stopSelf();
                 return START_NOT_STICKY;
             }
@@ -210,6 +211,8 @@ public final class FreezeMonitorService extends Service {
         }
         if (!running && settings.monitoringEnabled()) {
             publicStatus = "Monitoring requested • screen capture permission required";
+            showRecoveryNotification("Tap to restart screen capture");
+            stopSelf();
         }
         return running ? START_STICKY : START_NOT_STICKY;
     }
@@ -218,6 +221,7 @@ public final class FreezeMonitorService extends Service {
         if (!Settings.canDrawOverlays(this)) {
             captureSessionEnded = true;
             setNotReady("Overlay permission required");
+            showRecoveryNotification("Overlay permission required");
             stopSelf();
             return;
         }
@@ -237,6 +241,7 @@ public final class FreezeMonitorService extends Service {
                             RobotFreezeOrchestrator.instance().resetVisualCycle();
                             GreatEngine.instance().freezeCore().setHoldTrigger(false);
                             setNotReady("Screen capture ended • grant permission to resume");
+                            showRecoveryNotification("Screen capture ended • tap to authorize again");
                             stopSelf();
                         });
                     }
@@ -245,6 +250,7 @@ public final class FreezeMonitorService extends Service {
             } catch (Throwable e) {
                 captureSessionEnded = true;
                 setNotReady("Screen capture failed");
+                showRecoveryNotification("Capture unavailable • tap to retry permission");
                 stopSelf();
                 return;
             }
@@ -376,9 +382,74 @@ public final class FreezeMonitorService extends Service {
                 RobotFreezeOrchestrator.instance().onMonitoringResumed();
             }
         } catch (Throwable e) {
-            setNotReady("Display resize failed");
+            // A failed resize is not an OFF instruction. Rebind the capture surface
+            // while retaining the existing authorized MediaProjection session.
+            setVisual(COLOR_NOT_READY, "Display resize failed • retrying capture");
+            mainHandler.postDelayed(() -> recoverCaptureSurface("Display resize failed"), 700L);
         } finally {
             captureResizePending = false;
+        }
+    }
+
+    /**
+     * Android 14+ permits a single createVirtualDisplay per projection grant.
+     * Replacing only the ImageReader surface is safe; creating a second display
+     * would invalidate an otherwise recoverable monitoring session.
+     * Never silently re-request MediaProjection or reset the saved ON intention.
+     */
+    private void recoverCaptureSurface(String reason) {
+        surfaceRecoveryPending = false;
+        if (shuttingDown || !running || !monitoringActive || editing || captureResizePending
+                || !settings.enabled() || !settings.monitoringEnabled()
+                || projection == null || virtualDisplay == null
+                || surfaceRecoveryAttempts >= MAX_SURFACE_REBIND_ATTEMPTS) return;
+
+        surfaceRecoveryAttempts++;
+        ImageReader replacement = null;
+        try {
+            Point size = screenSize();
+            int width = Math.max(1, size.x);
+            int height = Math.max(1, size.y);
+            int dpi = getResources().getDisplayMetrics().densityDpi;
+            replacement = ImageReader.newInstance(
+                    width, height, PixelFormat.RGBA_8888, 3);
+            replacement.setOnImageAvailableListener(this::onImageAvailable, captureHandler);
+            virtualDisplay.resize(width, height, dpi);
+            virtualDisplay.setSurface(replacement.getSurface());
+
+            ImageReader old = imageReader;
+            imageReader = replacement;
+            replacement = null;
+            captureWidth = width;
+            captureHeight = height;
+            lastImageFrameNanos = System.nanoTime();
+            frameFailures = 0;
+            if (old != null) {
+                try { old.setOnImageAvailableListener(null, null); } catch (RuntimeException ignored) { }
+                try { old.close(); } catch (RuntimeException ignored) { }
+            }
+            // A stale image may have left the color detector fired. To avoid a
+            // false new trigger, require fresh white frames to arm it again.
+            cancelFreezeTimeout();
+            GreatEngine.instance().freezeCore().setHoldTrigger(false);
+            synchronized (engine) { engine.reset(); }
+            repositionOverlay();
+            RobotFreezeOrchestrator.instance().onMonitoringResumed();
+            setVisual(COLOR_NOT_READY, reason + " • capture reconnected, checking frames");
+        } catch (Throwable e) {
+            lastImageFrameNanos = System.nanoTime();
+            if (surfaceRecoveryAttempts >= MAX_SURFACE_REBIND_ATTEMPTS) {
+                setVisual(COLOR_NOT_READY,
+                        "Capture stalled after retries • tap Robot to grant new capture");
+                showRecoveryNotification("No fresh images • tap to restart screen capture");
+            } else {
+                setVisual(COLOR_NOT_READY, "Capture recovery failed • retrying");
+            }
+        } finally {
+            if (replacement != null) {
+                try { replacement.setOnImageAvailableListener(null, null); } catch (RuntimeException ignored) { }
+                try { replacement.close(); } catch (RuntimeException ignored) { }
+            }
         }
     }
 
