@@ -524,7 +524,7 @@ public final class GreatMainActivity extends Activity {
         detailedFreezeHistoryHeading.setMinHeight(dp(48));
         detailedFreezeHistoryHeading.setGravity(Gravity.CENTER_VERTICAL);
         add(card, detailedFreezeHistoryHeading, 0);
-        add(card, text("Tap to inspect every arrived packet by arrival number and UDP payload size.",
+        add(card, text("Inspect arrival order and UDP payload size (up to 10,000 traced packets per cycle).",
                 12, MUTED, false), 4);
         detailedFreezeHistoryBody = column();
         detailedFreezeHistoryBody.setVisibility(View.GONE);
@@ -556,9 +556,17 @@ public final class GreatMainActivity extends Activity {
             add(detailedFreezeHistoryBody, text(
                     "#" + cycle + "  " + time.format(new Date(record.startedAtMillis))
                             + "  •  " + record.source
-                            + "  •  Payload >= " + record.payloadMin + " && <= " + record.payloadMax,
+                            + (record.payloadRangeChanged ? "  •  Initial Payload: " : "  •  Payload: ")
+                             + record.payloadMin + "–" + record.payloadMax
+                             + (record.payloadRangeChanged ? " • changed during cycle" : ""),
                     13, TEXT, true), cycle == 1 ? 4 : 16);
 
+            if (record.arrived > record.trace.length) {
+                add(detailedFreezeHistoryBody, text(
+                        "Trace limited to first " + record.trace.length + " of "
+                                + record.arrived + " arrivals; counters include all packets.",
+                        11, MUTED, false), 4);
+            }
             StringBuilder lines = new StringBuilder(Math.max(96, record.trace.length * 44));
             for (int i = 0; i < record.trace.length; i++) {
                 int value = record.trace[i];
