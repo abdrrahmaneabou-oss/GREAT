@@ -365,6 +365,26 @@ public final class FreezeCore implements AutoCloseable {
         synchronized (lock) { releaseDelayMinMs = minMs; releaseDelayMaxMs = maxMs; }
     }
 
+    /** Replace all release bounds under one lock, so a worker never sees mixed ranges. */
+    public void setReleaseRanges(int dropMin, int dropMax, int burstMin, int burstMax,
+                                 int delayMin, int delayMax) {
+        if (dropMin < MIN_RELEASE_DROP_LIMIT_PERCENT || dropMax > MAX_RELEASE_DROP_LIMIT_PERCENT
+                || dropMin > dropMax || burstMin < MIN_RELEASE_BURST_LIMIT
+                || burstMax > MAX_RELEASE_BURST_LIMIT || burstMin > burstMax
+                || delayMin < MIN_RELEASE_DELAY_LIMIT_MS || delayMax > MAX_RELEASE_DELAY_LIMIT_MS
+                || delayMin > delayMax) {
+            throw new IllegalArgumentException("Invalid release ranges");
+        }
+        synchronized (lock) {
+            releaseDropMinPercent = dropMin;
+            releaseDropMaxPercent = dropMax;
+            releaseBurstMin = burstMin;
+            releaseBurstMax = burstMax;
+            releaseDelayMinMs = delayMin;
+            releaseDelayMaxMs = delayMax;
+        }
+    }
+
     public void setRampProfile(int durationMinMs, int durationMaxMs,
                                int stage1MinPercent, int stage1MaxPercent,
                                int stage2MinPercent, int stage2MaxPercent) {
