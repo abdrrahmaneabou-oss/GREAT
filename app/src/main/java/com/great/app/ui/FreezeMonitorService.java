@@ -58,6 +58,7 @@ public final class FreezeMonitorService extends Service {
     private static final String CHANNEL_ID = "great_visual_monitor";
     private static final String RECOVERY_CHANNEL_ID = "great_visual_monitor_recovery";
     private static final int RECOVERY_NOTIFICATION_ID = 4109;
+    private volatile long lastNotificationUpdateNanos;
     private static final long HEALTH_INTERVAL_MS = 3_000L;
     private static final long STALE_CAPTURE_NS = TimeUnit.SECONDS.toNanos(14);
     private static final int MAX_SURFACE_REBIND_ATTEMPTS = 3;
@@ -155,6 +156,7 @@ public final class FreezeMonitorService extends Service {
         if (ACTION_STOP.equals(action)) {
             settings.setEnabled(false);
             settings.setMonitoringEnabled(false);
+            clearRecoveryNotification();
             stopMonitor();
             return START_NOT_STICKY;
         }
@@ -609,7 +611,17 @@ public final class FreezeMonitorService extends Service {
     private void setVisual(int color, String status) {
         monitorColor = color;
         publicStatus = status;
-        mainHandler.post(() -> { if (monitorView != null) monitorView.invalidate(); });
+        mainHandler.post(() -> {
+            if (monitorView != null) monitorView.invalidate();
+            if (running && !shuttingDown) {
+                long now = System.nanoTime();
+                if (now - lastNotificationUpdateNanos > TimeUnit.SECONDS.toNanos(2)) {
+                    lastNotificationUpdateNanos = now;
+                    NotificationManager manager = getSystemService(NotificationManager.class);
+                    if (manager != null) manager.notify(NOTIFICATION_ID, buildNotification());
+                }
+            }
+        });
     }
 
     private void ensureOverlay() {
@@ -729,15 +741,47 @@ public final class FreezeMonitorService extends Service {
     }
 
     private Notification buildNotification() {
-        Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-                ? new Notification.Builder(this, CHANNEL_ID)
-                : new Notification.Builder(this);
-        return builder
-                .setSmallIcon(android.R.drawable.ic_menu_view)
-                .setContentTitle("GREAT visual monitor")
-                .setContentText("Screen capture is ready for the robot monitor")
-                .setOngoing(true)
+        Notification.Builder builder = new Notification.Builder(this, CHANNEL_ID);
+        Intent openApp = new Intent(this, GreatMainActivity.class);
+        PendingIntent open = PendingIntent.getActivity(this, 4107, openApp,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        builder.setSmallIcon(android.R.drawable.ic_menu_view)
+                .setContentTitle("GREAT • visual monitor")
+                .setContentText(monitoringActive ? "Monitoring ON • " + publicStatus
+                        : editing ? "Position editing • monitoring paused" : "Monitoring paused")
+                .setContentIntent(open)
+                .setCategory(Notification.CATEGORY_SERVICE)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
+                .setOnlyAlertOnce(true)
+                .setOngoing(true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE);
+        }
+        return builder.build();
+    }
+
+    private void showRecoveryNotification(String message) {
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager == null) return;
+        Intent open = new Intent(this, GreatMainActivity.class)
+                .setAction(GreatMainActivity.ACTION_REQUEST_MONITOR_CAPTURE)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent launch = PendingIntent.getActivity(this, 4109, open,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        Notification notice = new Notification.Builder(this, RECOVERY_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_dialog_alert)
+                .setContentTitle("GREAT • monitoring needs attention")
+                .setContentText(message)
+                .setContentIntent(launch)
+                .setAutoCancel(true)
+                .setCategory(Notification.CATEGORY_STATUS)
                 .build();
+        manager.notify(RECOVERY_NOTIFICATION_ID, notice);
+    }
+
+    private void clearRecoveryNotification() {
+        NotificationManager manager = getSystemService(NotificationManager.class);
+        if (manager != null) manager.cancel(RECOVERY_NOTIFICATION_ID);
     }
 
     private void ensureNotificationChannel() {
@@ -748,6 +792,11 @@ public final class FreezeMonitorService extends Service {
                 CHANNEL_ID, "GREAT visual monitor", NotificationManager.IMPORTANCE_LOW);
         channel.setDescription("Required while GREAT keeps screen capture ready for the robot monitor");
         nm.createNotificationChannel(channel);
+        NotificationChannel recovery = new NotificationChannel(
+                RECOVERY_CHANNEL_ID, "GREAT capture recovery",
+                NotificationManager.IMPORTANCE_DEFAULT);
+        recovery.setDescription("Tap to re-authorize capture after Android ends the session");
+        nm.createNotificationChannel(recovery);
     }
 
     private void stopMonitor() {
