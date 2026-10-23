@@ -26,6 +26,7 @@ import com.great.app.config.MonitorSettingsStore;
 import com.great.app.core.Capability;
 import com.great.app.core.FreezeCore;
 import com.great.app.core.GreatEngine;
+import com.great.app.vpn.GreatVpnService;
 
 import java.util.Map;
 import java.util.TreeMap;
@@ -417,6 +418,11 @@ public final class CapabilityOverlayService extends Service {
         boolean enabled = engine.capabilities().snapshot().enabled(Capability.FREEZE);
         if (!enabled && engine.targetCount() == 0) {
             Toast.makeText(this, "Add a target application and start the VPN first", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!enabled && !GreatVpnService.isTransportConnected()) {
+            Toast.makeText(this, "VPN is not connected • Freeze cannot hold traffic",
+                    Toast.LENGTH_LONG).show();
             return;
         }
         engine.capabilities().toggle(Capability.FREEZE);
