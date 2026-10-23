@@ -71,6 +71,7 @@ public final class FreezeMonitorService extends Service {
     private static volatile boolean running;
     private static volatile boolean editing;
     private static volatile boolean monitoringActive;
+    private static volatile boolean recoveryNeeded;
     private static volatile String publicStatus = "Monitor stopped";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -129,6 +130,7 @@ public final class FreezeMonitorService extends Service {
     public static boolean isRunning() { return running; }
     public static boolean isEditing() { return editing; }
     public static boolean isMonitoringActive() { return running && monitoringActive && !editing; }
+    public static boolean isCaptureRecovering() { return isMonitoringActive() && recoveryNeeded; }
     public static String status() {
         if (!isMonitoringActive()) return publicStatus;
         long last = lastValidFrameNanos;
@@ -650,6 +652,7 @@ public final class FreezeMonitorService extends Service {
 
     private void setVisual(int color, String status) {
         monitorColor = color;
+        recoveryNeeded = color == COLOR_NOT_READY;
         publicStatus = status;
         mainHandler.post(() -> {
             if (monitorView != null) monitorView.invalidate();
