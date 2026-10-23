@@ -810,13 +810,11 @@ public final class GreatMainActivity extends Activity {
                 Intent service = new Intent(this, FreezeMonitorService.class)
                         .setAction(FreezeMonitorService.ACTION_START)
                         .putExtra(FreezeMonitorService.EXTRA_RESULT_CODE, resultCode)
-                        .putExtra(FreezeMonitorService.EXTRA_RESULT_DATA, data);
+                        .putExtra(FreezeMonitorService.EXTRA_RESULT_DATA, data)
+                        .putExtra(FreezeMonitorService.EXTRA_EDIT_AFTER_START, monitorEditAfterStart);
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(service);
                 else startService(service);
-                if (monitorEditAfterStart) {
-                    handler.postDelayed(() -> startService(new Intent(this, FreezeMonitorService.class)
-                            .setAction(FreezeMonitorService.ACTION_EDIT)), 450);
-                }
+
             } else toast("Screen capture permission is required for the monitor");
             monitorEditAfterStart = false;
             monitorStartActiveAfterCapture = false;
