@@ -37,6 +37,7 @@ import com.great.app.monitor.PixelTriggerMonitorEngine;
 import com.great.app.monitor.RobotFreezeOrchestrator;
 
 import java.nio.ByteBuffer;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Tiny PixelTrigger-style visual sensor. Its locked overlay never consumes game touches. */
 public final class FreezeMonitorService extends Service {
@@ -79,6 +80,7 @@ public final class FreezeMonitorService extends Service {
     private boolean shuttingDown;
     private volatile int monitorColor = COLOR_NOT_READY;
     private Runnable freezeTimeout;
+    private final AtomicLong timeoutSerial = new AtomicLong();
     private volatile int captureWidth;
     private volatile int captureHeight;
     private volatile boolean captureResizePending;
@@ -352,10 +354,15 @@ public final class FreezeMonitorService extends Service {
 
     private void scheduleFreezeTimeout() {
         cancelFreezeTimeout();
+        final long token = timeoutSerial.get();
         freezeTimeout = () -> {
+            if (token != timeoutSerial.get()) return;
             freezeTimeout = null;
-            if (!running || editing || !settings.monitoringEnabled()) return;
-            if (engine.state() != PixelTriggerMonitorEngine.State.FIRED) return;
+            if (!running || editing || !monitoringActive || !settings.monitoringEnabled()) return;
+            synchronized (engine) {
+                if (engine.state() != PixelTriggerMonitorEngine.State.FIRED) return;
+                engine.expireVisualFreeze();
+            }
             GreatEngine.instance().freezeCore().setHoldTrigger(false);
             setVisual(COLOR_WAITING, "Freeze limit reached • waiting for white");
         };
@@ -363,6 +370,7 @@ public final class FreezeMonitorService extends Service {
     }
 
     private void cancelFreezeTimeout() {
+        timeoutSerial.incrementAndGet();
         if (freezeTimeout != null) mainHandler.removeCallbacks(freezeTimeout);
         freezeTimeout = null;
     }
