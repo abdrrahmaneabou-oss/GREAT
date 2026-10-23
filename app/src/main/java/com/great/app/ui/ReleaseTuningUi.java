@@ -85,8 +85,8 @@ final class ReleaseTuningUi {
     }
 
     private static void configureLightThrottleSave(Activity activity, View root) {
-        View card = findContainingView(root, "ROBOT LIGHT OUTBOUND THROTTLE");
-        if (card == null) card = findContainingView(root, "الخنق الخفيف بالتوازي مع التجميد");
+        View card = findDirectCard(root, "ROBOT LIGHT OUTBOUND THROTTLE");
+        if (card == null) card = findDirectCard(root, "الخنق الخفيف بالتوازي مع التجميد");
         if (card == null) return;
 
         EditText startMinInput = findEditTextByHint(card, "Min Start Delay");
@@ -231,6 +231,19 @@ final class ReleaseTuningUi {
 
         TextView save = button(activity, "SAVE RELEASE SETTINGS");
         save.setOnClickListener(v -> {
+            // Validate the full form before mutating any persisted or live setting.
+            if (!saveOptionalRange(dropMin, dropMax,
+                    FreezeCore.MIN_RELEASE_DROP_LIMIT_PERCENT,
+                    FreezeCore.MAX_RELEASE_DROP_LIMIT_PERCENT,
+                    "%", (min, max) -> { })) return;
+            if (!saveOptionalRange(burstMin, burstMax,
+                    FreezeCore.MIN_RELEASE_BURST_LIMIT,
+                    FreezeCore.MAX_RELEASE_BURST_LIMIT,
+                    "packets", (min, max) -> { })) return;
+            if (!saveOptionalRange(delayMin, delayMax,
+                    FreezeCore.MIN_RELEASE_DELAY_LIMIT_MS,
+                    FreezeCore.MAX_RELEASE_DELAY_LIMIT_MS,
+                    "ms", (min, max) -> { })) return;
             if (!saveOptionalRange(dropMin, dropMax,
                     FreezeCore.MIN_RELEASE_DROP_LIMIT_PERCENT,
                     FreezeCore.MAX_RELEASE_DROP_LIMIT_PERCENT,
@@ -340,6 +353,19 @@ final class ReleaseTuningUi {
             blankRecursive(group.getChildAt(i), fixedPayloadSaved, randomPayloadSaved,
                     lightStartSaved, lightDurationSaved, postSaved);
         }
+    }
+
+    /** Only search sibling cards, never their shared ScrollView ancestor. */
+    private static View findDirectCard(View root, String expected) {
+        ScrollView scroll = findScrollView(root);
+        if (scroll == null || scroll.getChildCount() == 0
+                || !(scroll.getChildAt(0) instanceof ViewGroup)) return null;
+        ViewGroup cards = (ViewGroup) scroll.getChildAt(0);
+        for (int i = 0; i < cards.getChildCount(); i++) {
+            View child = cards.getChildAt(i);
+            if (containsText(child, expected)) return child;
+        }
+        return null;
     }
 
     private static View findContainingView(View view, String expected) {
