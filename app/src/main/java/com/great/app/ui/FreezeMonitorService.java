@@ -597,14 +597,22 @@ public final class FreezeMonitorService extends Service {
         Point screen = screenSize();
         if (screen.x <= 0 || screen.y <= 0) return null;
 
-        float centerScreenX = settings.centerXFraction() * screen.x;
-        float centerScreenY = settings.centerYFraction() * screen.y;
+        // Capture the point actually marked on screen, including overlay-position
+        // clamping near its edges, not an idealized unclamped preference.
+        WindowManager.LayoutParams marker = overlayParams;
+        float centerScreenX = marker != null
+                ? marker.x + marker.width / 2f : settings.centerXFraction() * screen.x;
+        float centerScreenY = marker != null
+                ? marker.y + marker.height / 2f : settings.centerYFraction() * screen.y;
         int cx = crop.left + Math.round(centerScreenX * crop.width() / screen.x);
         int cy = crop.top + Math.round(centerScreenY * crop.height() / screen.y);
-        float diameter = sensorDiameterPx();
-        int rx = Math.max(1, Math.round((diameter * crop.width() / screen.x) / 2f));
-        int ry = Math.max(1, Math.round((diameter * crop.height() / screen.y) / 2f));
-        int[][] points = {{cx, cy}, {cx - rx, cy}, {cx + rx, cy}, {cx, cy - ry}, {cx, cy + ry}};
+        // The visible marker stays 0.30 mm. If only one unobstructed pixel
+        // fits inside it, sample ONE pixel instead of reading the colored ring
+        // or widening the visible circle.
+        float scale = Math.min((float) crop.width() / screen.x,
+                (float) crop.height() / screen.y);
+        int[][] points = ProbeReticleGeometry.probePoints(
+                cx, cy, sensorDiameterPx() * scale);
 
         ByteBuffer buffer = plane.getBuffer();
         int[] packed = new int[PixelTriggerMonitorEngine.MAX_PROBE_POINTS];
@@ -1028,16 +1036,17 @@ public final class FreezeMonitorService extends Service {
         MonitorView() {
             super(FreezeMonitorService.this);
             stroke.setStyle(Paint.Style.STROKE);
-            stroke.setStrokeWidth(ProbeReticleGeometry.RETICLE_STROKE_DP
-                    * getResources().getDisplayMetrics().density);
+            stroke.setStrokeWidth(ProbeReticleGeometry.strokePixels(sensorDiameterPx()));
         }
 
         @Override protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
             stroke.setColor(monitorColor);
-            float density = getResources().getDisplayMetrics().density;
-            float radius = ProbeReticleGeometry.radiusPixels(density, sensorDiameterPx());
-            // Transparent center: no drawn pixels inside the probe footprint.
+            float diameter = sensorDiameterPx();
+            float radius = ProbeReticleGeometry.radiusPixels(
+                    getResources().getDisplayMetrics().density, diameter);
+            // The outer edge is EXACTLY the original physical diameter (0.30mm);
+            // color probes stay inside the unpainted center, not outside it.
             canvas.drawCircle(getWidth() / 2f, getHeight() / 2f, radius, stroke);
         }
     }
