@@ -10,8 +10,7 @@ import java.util.ArrayList;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.Random;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -48,11 +47,19 @@ public final class GlobalRobotOutboundThrottle {
 
     private final Object lock = new Object();
     private final Random rng;
-    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-        Thread t = new Thread(r, "GREAT-Robot-Global-Outbound");
-        t.setDaemon(true);
-        return t;
-    });
+    private final ScheduledThreadPoolExecutor scheduler = newScheduler();
+
+    private static ScheduledThreadPoolExecutor newScheduler() {
+        ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(1, r -> {
+            Thread t = new Thread(r, "GREAT-Robot-Global-Outbound");
+            t.setDaemon(true);
+            return t;
+        });
+        // OFF can cancel thousands of outstanding timers; do not retain their
+        // canceled tasks in the queue until their original deadlines expire.
+        executor.setRemoveOnCancelPolicy(true);
+        return executor;
+    }
     private final AtomicLong seen = new AtomicLong();
     private final AtomicLong delayed = new AtomicLong();
     private final AtomicLong backlogBypassed = new AtomicLong();
