@@ -824,7 +824,10 @@ public final class FreezeMonitorService extends Service {
                 .setAutoCancel(true)
                 .setCategory(Notification.CATEGORY_STATUS)
                 .build();
-        manager.notify(RECOVERY_NOTIFICATION_ID, notice);
+        try { manager.notify(RECOVERY_NOTIFICATION_ID, notice); }
+        catch (RuntimeException ignored) {
+            // Permission and OEM notification behavior must not crash monitoring.
+        }
     }
 
     private void clearRecoveryNotification() {
