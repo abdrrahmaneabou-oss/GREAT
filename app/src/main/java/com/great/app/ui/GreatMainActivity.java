@@ -789,10 +789,9 @@ public final class GreatMainActivity extends Activity {
     private void stopGreat() {
         GreatEngine.instance().capabilities().set(Capability.FREEZE, false);
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
+        // STOP VPN must not silently switch OFF the separate Robot monitor.
+        // A capture session remains active until the user explicitly turns the monitor off.
         startService(new Intent(this, GreatVpnService.class).setAction(GreatVpnService.ACTION_STOP));
-        if (FreezeMonitorService.isRunning()) {
-            startService(new Intent(this, FreezeMonitorService.class).setAction(FreezeMonitorService.ACTION_STOP));
-        }
         toast("VPN stopped");
     }
 
