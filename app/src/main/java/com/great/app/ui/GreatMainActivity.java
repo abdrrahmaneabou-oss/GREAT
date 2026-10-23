@@ -85,8 +85,12 @@ public final class GreatMainActivity extends Activity {
                         && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
                         != PackageManager.PERMISSION_GRANTED
                         ? "\nNOTIFICATIONS: hidden • allow in Android Settings" : "";
+                long throttleBypassed = GlobalRobotOutboundThrottle.instance().backlogBypassed();
+                String pressure = throttleBypassed <= 0L ? ""
+                        : "\nTHROTTLE OVERLOAD: " + throttleBypassed
+                          + " packets passed without delay (buffer limit)";
                 vpnRuntimeState.setText("VPN: " + GreatVpnService.publicStatus()
-                        + "\nMONITOR: " + monitorStatus + notificationStatus);
+                        + "\nMONITOR: " + monitorStatus + notificationStatus + pressure);
             }
             handler.postDelayed(this, 1000L);
         }
