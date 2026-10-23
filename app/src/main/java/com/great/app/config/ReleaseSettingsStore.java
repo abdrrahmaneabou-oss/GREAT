@@ -30,17 +30,30 @@ public final class ReleaseSettingsStore {
     public ReleaseSettingsStore(Context context) {
         prefs = context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         SharedPreferences.Editor editor = null;
-        if (!prefs.contains(DROP_MIN) || !prefs.contains(DROP_MAX)) {
-            editor = prefs.edit().putInt(DROP_MIN, DEFAULT_DROP_MIN_PERCENT)
-                    .putInt(DROP_MAX, DEFAULT_DROP_MAX_PERCENT);
-        }
-        if (!prefs.contains(BURST_MIN) || !prefs.contains(BURST_MAX)) {
+        // A partial migration must not overwrite the user's valid existing values.
+        if (!prefs.contains(DROP_MIN)) {
             if (editor == null) editor = prefs.edit();
-            editor.putInt(BURST_MIN, DEFAULT_BURST_MIN).putInt(BURST_MAX, DEFAULT_BURST_MAX);
+            editor.putInt(DROP_MIN, DEFAULT_DROP_MIN_PERCENT);
         }
-        if (!prefs.contains(DELAY_MIN_MS) || !prefs.contains(DELAY_MAX_MS)) {
+        if (!prefs.contains(DROP_MAX)) {
             if (editor == null) editor = prefs.edit();
-            editor.putInt(DELAY_MIN_MS, DEFAULT_DELAY_MIN_MS).putInt(DELAY_MAX_MS, DEFAULT_DELAY_MAX_MS);
+            editor.putInt(DROP_MAX, DEFAULT_DROP_MAX_PERCENT);
+        }
+        if (!prefs.contains(BURST_MIN)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(BURST_MIN, DEFAULT_BURST_MIN);
+        }
+        if (!prefs.contains(BURST_MAX)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(BURST_MAX, DEFAULT_BURST_MAX);
+        }
+        if (!prefs.contains(DELAY_MIN_MS)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(DELAY_MIN_MS, DEFAULT_DELAY_MIN_MS);
+        }
+        if (!prefs.contains(DELAY_MAX_MS)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(DELAY_MAX_MS, DEFAULT_DELAY_MAX_MS);
         }
         if (editor != null) editor.apply();
     }
