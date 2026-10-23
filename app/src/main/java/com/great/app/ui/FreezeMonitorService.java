@@ -227,7 +227,15 @@ public final class FreezeMonitorService extends Service {
             stopSelf();
             return;
         }
-        startAsForeground();
+        try {
+            startAsForeground();
+        } catch (RuntimeException error) {
+            captureSessionEnded = true;
+            setNotReady("Android refused foreground screen capture");
+            showRecoveryNotification("Open GREAT to grant capture and foreground permissions");
+            stopSelf();
+            return;
+        }
         if (projection == null) {
             try {
                 projection = projectionManager.getMediaProjection(resultCode, resultData);
@@ -257,7 +265,15 @@ public final class FreezeMonitorService extends Service {
                 return;
             }
         }
-        ensureOverlay();
+        try {
+            ensureOverlay();
+        } catch (RuntimeException error) {
+            captureSessionEnded = true;
+            setNotReady("Overlay unavailable • permission may have changed");
+            showRecoveryNotification("GREAT needs overlay permission to monitor");
+            stopSelf();
+            return;
+        }
         lastValidFrameNanos = 0L;
         lastImageFrameNanos = System.nanoTime();
         frameFailures = 0;
