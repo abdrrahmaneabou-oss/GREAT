@@ -35,7 +35,19 @@ import java.util.Arrays;
 public final class GreatVpnService extends VpnService {
     public static final String ACTION_START = "com.great.app.action.START";
     public static final String ACTION_STOP = "com.great.app.action.STOP";
-    private TunnelTransport transport;
+    private static volatile GreatVpnService activeService;
+    private static volatile String lastStartFailure;
+    private volatile TunnelTransport transport;
+
+    public static String publicStatus() {
+        GreatVpnService service = activeService;
+        if (service == null) return lastStartFailure == null ? "STOPPED" : lastStartFailure;
+        TunnelTransport current = service.transport;
+        if (current == null) return lastStartFailure == null ? "STOPPED" : lastStartFailure;
+        TransportState state = current.state();
+        if (state == TransportState.FAILED) return "FAILED • tap START VPN to retry";
+        return state.name();
+    }
     private TargetAppsStore targets;
     private FreezeHistoryStore freezeHistory;
     private final SharedPreferences.OnSharedPreferenceChangeListener targetChanges = (prefs, key) -> {
@@ -49,6 +61,7 @@ public final class GreatVpnService extends VpnService {
 
     @Override public void onCreate() {
         super.onCreate();
+        activeService = this;
         targets = new TargetAppsStore(this);
         freezeHistory = new FreezeHistoryStore(this);
         targets.register(targetChanges);
@@ -147,7 +160,9 @@ public final class GreatVpnService extends VpnService {
             TunnelTransport next = new AwgTransport(engine.pipeline(), engine.freezeCore());
             next.start(this, config, raw);
             transport = next;
+            lastStartFailure = null;
         } catch (Exception e) {
+            lastStartFailure = "START FAILED (" + e.getClass().getSimpleName() + ")";
             if (transport != null) transport.close();
             transport = null;
             GlobalRobotOutboundThrottle.instance().setFeatureEnabled(false);
@@ -165,12 +180,14 @@ public final class GreatVpnService extends VpnService {
         }
         GlobalRobotOutboundThrottle.instance().setFeatureEnabled(false);
         GreatEngine.instance().reset();
+        lastStartFailure = null;
     }
 
     @Override public void onDestroy() {
         targets.unregister(targetChanges);
         unregisterReceiver(packageChanges);
         stopEngine();
+        if (activeService == this) activeService = null;
         super.onDestroy();
     }
     @Override public IBinder onBind(Intent intent) { return super.onBind(intent); }
