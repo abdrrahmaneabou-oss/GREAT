@@ -131,4 +131,19 @@ public final class PixelTriggerMonitorEngineTest {
         engine.process(sample(0xffffff, 0x101010, 0x101010, 0x101010, 0x101010));
         assertEquals(PixelTriggerMonitorEngine.State.ARMED, engine.state());
     }
+
+    @Test public void centerOnlyTinySensorStillRecognizesWhiteLossAndRearm() {
+        PixelTriggerMonitorEngine engine = deterministic(null);
+        PixelTriggerMonitorEngine.Sample white = sample(0xffffff);
+        PixelTriggerMonitorEngine.Sample nonWhite = sample(0x4477dd);
+        for (int i = 0; i < 3; i++) engine.process(white);
+        assertEquals("Center pixel alone must arm when white is present",
+                PixelTriggerMonitorEngine.State.ARMED, engine.state());
+        engine.process(nonWhite);
+        assertEquals("Tiny circle must detect disappearance of white",
+                PixelTriggerMonitorEngine.State.FIRED, engine.state());
+        for (int i = 0; i < 3; i++) engine.process(white);
+        assertEquals("Return of white must rearm",
+                PixelTriggerMonitorEngine.State.ARMED, engine.state());
+    }
 }
