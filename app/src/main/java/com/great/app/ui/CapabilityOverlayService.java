@@ -22,10 +22,8 @@ import android.widget.Toast;
 
 import com.great.app.config.MonitorSettingsStore;
 import com.great.app.core.Capability;
-import com.great.app.core.FreezeCore;
 import com.great.app.core.GreatEngine;
 import com.great.app.vpn.GreatVpnService;
-
 
 /** Two floating capability controls. Detailed Freeze logs remain inside GREAT. */
 public final class CapabilityOverlayService extends Service {
@@ -68,6 +66,13 @@ public final class CapabilityOverlayService extends Service {
         super.onCreate();
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        // Clean up obsolete floating-log position and collapsed state, while
+        // retaining both control-circle locations and the in-app Freeze history.
+        if (prefs.contains("packet_summary_x") || prefs.contains("packet_summary_y")
+                || prefs.contains("packet_summary_collapsed")) {
+            prefs.edit().remove("packet_summary_x").remove("packet_summary_y")
+                    .remove("packet_summary_collapsed").apply();
+        }
         monitorSettings = new MonitorSettingsStore(this);
     }
 
@@ -264,7 +269,9 @@ public final class CapabilityOverlayService extends Service {
                     if (dragging) {
                         if (robot) {
                             savePosition(p, KEY_ROBOT_X, KEY_ROBOT_Y);
-                                        } else savePosition(p, KEY_FREEZE_X, KEY_FREEZE_Y);
+                        } else {
+                            savePosition(p, KEY_FREEZE_X, KEY_FREEZE_Y);
+                        }
                     } else if (!longPressed) {
                         if (robot) onRobotClick(); else onFreezeClick();
                     }
