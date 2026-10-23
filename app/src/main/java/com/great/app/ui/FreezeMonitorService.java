@@ -1016,6 +1016,11 @@ public final class FreezeMonitorService extends Service {
         }
         if (captureHandler != null) captureHandler.removeCallbacks(captureWatchdog);
         if (captureThread != null) captureThread.quitSafely();
+        // Direct stopService() calls onDestroy without ACTION_STOP.
+        // Remove both foreground and any prior "capture recovery" notification.
+        clearRecoveryNotification();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE);
+        else stopForeground(true);
         if (!captureSessionEnded) publicStatus = "Monitor stopped";
         super.onDestroy();
     }
