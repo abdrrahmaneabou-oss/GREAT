@@ -47,6 +47,7 @@ public final class CapabilityOverlayService extends Service {
     private static final int ACTIVE = 0xffef5350;
     private static final int INACTIVE = 0xff7b808c;
     private static final int EDITING = 0xffffc107;
+    private static final int RECOVERING = 0xffdc75ff;
     private static final int SIZE_DP = 58;
     private static final int SUMMARY_CONTROL_DP = 28;
     private static final long LONG_PRESS_MS = 300L;
@@ -258,6 +259,7 @@ public final class CapabilityOverlayService extends Service {
         if (robotView != null) {
             int color;
             if (FreezeMonitorService.isEditing()) color = EDITING;
+            else if (FreezeMonitorService.isCaptureRecovering()) color = RECOVERING;
             else color = FreezeMonitorService.isMonitoringActive() ? ACTIVE : INACTIVE;
             if (color != lastRobotColor) {
                 robotView.setBackground(circleBg(color));
