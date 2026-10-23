@@ -44,6 +44,7 @@ public final class GlobalRobotOutboundThrottle {
     private enum LightOwner { NONE, VISUAL, PERIODIC }
     private static final GlobalRobotOutboundThrottle INSTANCE = new GlobalRobotOutboundThrottle(new Random());
     private static final int MAX_PENDING_OUTBOUND = 8192;
+    private static final int MAX_PENDING_BYTES = 16 * 1024 * 1024;
 
     private final Object lock = new Object();
     private final Random rng;
@@ -67,6 +68,7 @@ public final class GlobalRobotOutboundThrottle {
     // lock as the switches, OFF reschedules pending work without packet loss.
     private final HashMap<Long, PendingDelivery> pending = new HashMap<>();
     private long nextPendingId;
+    private long pendingBytes;
 
     private static final class PendingDelivery {
         final long id;
@@ -358,7 +360,8 @@ public final class GlobalRobotOutboundThrottle {
 
             // Bounded memory: under an impossible backlog, bypass rather than
             // silently drop a packet. The bypass count is exposed for diagnostics.
-            if (pending.size() >= MAX_PENDING_OUTBOUND) {
+            if (pending.size() >= MAX_PENDING_OUTBOUND
+                    || pendingBytes + packet.length() > MAX_PENDING_BYTES) {
                 backlogBypassed.incrementAndGet();
                 return PacketDecision.PASS;
             }
@@ -371,10 +374,12 @@ public final class GlobalRobotOutboundThrottle {
                     lightDelay > 0L ? now + lightDelay : 0L,
                     postDelay > 0L ? now + postDelay : 0L);
             pending.put(delivery.id, delivery);
+            pendingBytes += held.length();
             try {
                 schedulePendingLocked(delivery);
             } catch (RejectedExecutionException e) {
                 pending.remove(delivery.id);
+                pendingBytes -= held.length();
                 backlogBypassed.incrementAndGet();
                 return PacketDecision.PASS;
             }
@@ -395,7 +400,9 @@ public final class GlobalRobotOutboundThrottle {
         synchronized (lock) {
             if (delivery.finished) return;
             delivery.finished = true;
-            pending.remove(delivery.id);
+            if (pending.remove(delivery.id) != null) {
+                pendingBytes -= delivery.packet.length();
+            }
             if (sink != delivery.output || transportGeneration != delivery.generation) return;
         }
         try { delivery.output.emit(delivery.packet); } catch (Exception ignored) { }
@@ -419,6 +426,7 @@ public final class GlobalRobotOutboundThrottle {
             if (delivery.future != null) delivery.future.cancel(false);
         }
         pending.clear();
+        pendingBytes = 0L;
     }
 
     private long nextLightDelayLocked(long now) {
