@@ -1,6 +1,8 @@
 package com.great.app.ui;
 
 import android.app.Activity;
+import android.app.NotificationManager;
+import android.content.Context;
 import android.Manifest;
 import android.content.pm.PackageManager;
 import android.content.Intent;
@@ -71,6 +73,7 @@ public final class GreatMainActivity extends Activity {
     private TextView configState;
     private TextView vpnRuntimeState;
     private boolean runtimeStatusVisible;
+    private boolean shuttingDownEverything;
     private final Runnable runtimeStatusRefresh = new Runnable() {
         @Override public void run() {
             if (!runtimeStatusVisible) return;
@@ -192,7 +195,7 @@ public final class GreatMainActivity extends Activity {
     }
 
     private void handleAction(Intent intent) {
-        if (intent == null) return;
+        if (intent == null || shuttingDownEverything) return;
         if (ACTION_REQUEST_MONITOR_CAPTURE.equals(intent.getAction())) {
             handler.post(() -> requestMonitorCapture(true, false));
         } else if (ACTION_REQUEST_MONITOR_EDIT.equals(intent.getAction())) {
@@ -246,6 +249,7 @@ public final class GreatMainActivity extends Activity {
         add(root, robotTimeoutCard(), 14);
         add(root, showCirclesCard(), 14);
         add(root, hideCirclesCard(), 14);
+        add(root, shutdownEverythingCard(), 36);
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
@@ -779,6 +783,61 @@ public final class GreatMainActivity extends Activity {
         return card;
     }
 
+    private View shutdownEverythingCard() {
+        LinearLayout card = card();
+        add(card, text("اغلاق كل شيء", 15, ACCENT, true), 0);
+        add(card, text("إيقاف VPN وجلسة التقاط الشاشة والمراقبة والدوائر والتجميد والخنق "
+                + "والإشعارات، ثم إغلاق GREAT. لن تُحذف إعداداتك أو سجلاتك.",
+                12, MUTED, false), 9);
+        TextView off = button("اغلاق كل شيء", false);
+        off.setOnClickListener(v -> shutdownEverything());
+        add(card, off, 14);
+        return card;
+    }
+
+    private void shutdownEverything() {
+        if (shuttingDownEverything) return;
+        shuttingDownEverything = true;
+        // Persist the user's explicit OFF choice BEFORE stopping services. The
+        // VPN auto-recovery watchdog and START_STICKY must never resurrect VPN.
+        // commit() is intentional: an asynchronous apply() can lose the last
+        // user intent if Android reclaims the process immediately afterward.
+        getSharedPreferences("great_vpn_service_runtime", MODE_PRIVATE).edit()
+                .putBoolean("vpn_start_requested", false).commit();
+        monitorSettings.setMonitoringEnabled(false);
+        monitorSettings.setEnabled(false);
+        overlayPending = false;
+        monitorCapturePending = false;
+        monitorEditAfterStart = false;
+        monitorStartActiveAfterCapture = false;
+        runtimeStatusVisible = false;
+        handler.removeCallbacks(runtimeStatusRefresh);
+
+        // Stop real Android services, not merely their status indicators.
+        // onDestroy closes the tunnel, releases MediaProjection/ImageReader,
+        // removes floating windows and stops foreground notifications.
+        stopService(new Intent(this, FreezeMonitorService.class));
+        stopService(new Intent(this, CapabilityOverlayService.class));
+        stopService(new Intent(this, GreatVpnService.class));
+
+        // Also neutralize packet state if one service was already absent.
+        GlobalRobotOutboundThrottle.instance().setFeatureEnabled(false);
+        GreatEngine.instance().reset();
+
+        // Cancel the app's own foreground/recovery notifications. Do not
+        // cancel unrelated notifications belonging to other applications.
+        NotificationManager notifications =
+                (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (notifications != null) {
+            notifications.cancel(4107);
+            notifications.cancel(4108);
+            notifications.cancel(4109);
+        }
+        // A cached Android process may remain in memory, but no capture,
+        // VPN, overlay or periodic polling service should remain active.
+        finishAndRemoveTask();
+    }
+
     private View targetCard() {
         LinearLayout card = card();
         targetHeading = text("", 14, ACCENT, true);
@@ -921,6 +980,7 @@ public final class GreatMainActivity extends Activity {
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == MONITOR_CAPTURE) {
+            if (shuttingDownEverything) return;
             if (resultCode == RESULT_OK && data != null) {
                 monitorSettings.setMonitoringEnabled(monitorStartActiveAfterCapture);
                 Intent service = new Intent(this, FreezeMonitorService.class)
@@ -936,7 +996,10 @@ public final class GreatMainActivity extends Activity {
             monitorStartActiveAfterCapture = false;
             return;
         }
-        if (requestCode == VPN_PERMISSION && resultCode == RESULT_OK) { startGreat(); return; }
+        if (requestCode == VPN_PERMISSION && resultCode == RESULT_OK) {
+            if (!shuttingDownEverything) startGreat();
+            return;
+        }
         if (requestCode == PICK_CONFIG && resultCode == RESULT_OK && data != null && data.getData() != null) {
             importConfig(data.getData());
         }
