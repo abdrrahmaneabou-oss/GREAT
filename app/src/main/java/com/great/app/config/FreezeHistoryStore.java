@@ -64,7 +64,7 @@ public final class FreezeHistoryStore {
         int[] trace = new int[count];
         for (int i = 0; i < count; i++) trace[i] = stats.traceValue(i);
         current.add(0, new DetailRecord(stats.startedAtMillis(), stats.source(),
-                stats.payloadMin(), stats.payloadMax(), trace));
+                stats.payloadMin(), stats.payloadMax(), stats.payloadRangeChanged(), trace));
         if (current.size() > DETAIL_LIMIT) current = new ArrayList<>(current.subList(0, DETAIL_LIMIT));
 
         JSONArray array = new JSONArray();
@@ -75,6 +75,7 @@ public final class FreezeHistoryStore {
                 object.put("source", record.source);
                 object.put("payloadMin", record.payloadMin);
                 object.put("payloadMax", record.payloadMax);
+                object.put("payloadRangeChanged", record.payloadRangeChanged);
                 object.put("trace", encodeTrace(record.trace));
                 array.put(object);
             } catch (Exception ignored) { }
@@ -116,6 +117,7 @@ public final class FreezeHistoryStore {
                         object.optString("source", "UNKNOWN"),
                         object.optInt("payloadMin", FreezeCore.DEFAULT_PAYLOAD_MIN),
                         object.optInt("payloadMax", FreezeCore.DEFAULT_PAYLOAD_MAX),
+                        object.optBoolean("payloadRangeChanged", false),
                         decodeTrace(object.optString("trace", ""))));
             }
         } catch (Exception ignored) { }
@@ -167,13 +169,16 @@ public final class FreezeHistoryStore {
         public final String source;
         public final int payloadMin;
         public final int payloadMax;
+        public final boolean payloadRangeChanged;
         public final int[] trace;
 
-        DetailRecord(long startedAtMillis, String source, int payloadMin, int payloadMax, int[] trace) {
+        DetailRecord(long startedAtMillis, String source, int payloadMin,
+                     int payloadMax, boolean payloadRangeChanged, int[] trace) {
             this.startedAtMillis = startedAtMillis;
             this.source = source;
             this.payloadMin = payloadMin;
             this.payloadMax = payloadMax;
+            this.payloadRangeChanged = payloadRangeChanged;
             this.trace = trace;
         }
     }
