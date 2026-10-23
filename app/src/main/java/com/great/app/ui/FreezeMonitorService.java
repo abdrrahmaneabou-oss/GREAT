@@ -99,6 +99,8 @@ public final class FreezeMonitorService extends Service {
     private volatile boolean captureResizePending;
     private volatile boolean captureSessionEnded;
     private static volatile long lastValidFrameNanos;
+    private static volatile String lastProbeReading = "no valid RGB frame";
+    private static volatile long capturedSampleCount;
     private volatile long lastImageFrameNanos;
     private volatile int frameFailures;
     private volatile int surfaceRecoveryAttempts;
@@ -183,13 +185,15 @@ public final class FreezeMonitorService extends Service {
     public static String status() {
         if (!isMonitoringActive()) return publicStatus;
         long last = lastValidFrameNanos;
-        if (last <= 0L) return publicStatus + " • awaiting first captured frame";
+        if (last <= 0L) return publicStatus + " • awaiting first captured frame"
+                + " • " + lastProbeReading;
         long age = java.util.concurrent.TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - last);
         if (age >= 10L) {
             // A static screen may legitimately yield no new frames. Don't imply permission loss.
-            return publicStatus + " • no new image frames for " + age + "s (possibly static)";
+            return publicStatus + " • last valid image " + age + "s ago"
+                    + " • " + lastProbeReading;
         }
-        return publicStatus;
+        return publicStatus + " • " + lastProbeReading;
     }
 
     @Override public void onCreate() {
@@ -329,6 +333,8 @@ public final class FreezeMonitorService extends Service {
             return;
         }
         lastValidFrameNanos = 0L;
+        lastProbeReading = "no valid RGB frame";
+        capturedSampleCount = 0L;
         lastImageFrameNanos = System.nanoTime();
         frameFailures = 0;
         surfaceRecoveryAttempts = 0;
@@ -386,6 +392,12 @@ public final class FreezeMonitorService extends Service {
                     || !settings.monitoringEnabled()) return;
             PixelTriggerMonitorEngine.Sample sample = sampleImage(image);
             if (sample != null) {
+                int center = sample.probe(0);
+                capturedSampleCount++;
+                lastProbeReading = "RGB " + ((center >>> 16) & 255) + "/"
+                        + ((center >>> 8) & 255) + "/" + (center & 255)
+                        + " • white " + Math.round(sample.whiteRatio() * 100) + "%"
+                        + " • frames " + capturedSampleCount;
                 boolean justRecovered = frameFailures > 0 || surfaceRecoveryAttempts > 0;
                 frameFailures = 0;
                 surfaceRecoveryAttempts = 0;
@@ -403,6 +415,7 @@ public final class FreezeMonitorService extends Service {
                     }
                 }
             } else {
+                lastProbeReading = "captured frame has no readable RGB probes";
                 resetStationaryWhite();
                 frameFailures++;
             }
