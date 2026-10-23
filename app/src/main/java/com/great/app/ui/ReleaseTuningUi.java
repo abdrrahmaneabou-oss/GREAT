@@ -74,13 +74,13 @@ final class ReleaseTuningUi {
     }
 
     private static void applyReleaseSettings(Context context) {
-        ReleaseSettingsStore store = new ReleaseSettingsStore(context);
+        ReleaseSettingsStore.Snapshot store = new ReleaseSettingsStore(context).snapshot();
         FreezeCore core = GreatEngine.instance().freezeCore();
+        core.setReleaseRanges(store.dropMin(), store.dropMax(), store.burstMin(),
+                store.burstMax(), store.delayMinMs(), store.delayMaxMs());
         core.setReleaseDropEnabled(store.dropEnabled());
         core.setReleaseBurstEnabled(store.burstEnabled());
         core.setReleaseDelayEnabled(store.delayEnabled());
-        core.setReleaseRanges(store.dropMinPercent(), store.dropMaxPercent(),
-                store.burstMin(), store.burstMax(), store.delayMinMs(), store.delayMaxMs());
     }
 
     private static void configureLightThrottleSave(Activity activity, View root) {
