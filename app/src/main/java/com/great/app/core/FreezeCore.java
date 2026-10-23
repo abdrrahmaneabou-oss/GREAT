@@ -323,23 +323,33 @@ public final class FreezeCore implements AutoCloseable {
             throw new IllegalArgumentException("Random payload ranges must stay inside 1..600 and minimum range must remain below maximum range");
         }
         synchronized (lock) {
+            if (randomPayloadMinFrom == minFrom && randomPayloadMinTo == minTo
+                    && randomPayloadMaxFrom == maxFrom && randomPayloadMaxTo == maxTo) return;
             randomPayloadMinFrom = minFrom;
             randomPayloadMinTo = minTo;
             randomPayloadMaxFrom = maxFrom;
             randomPayloadMaxTo = maxTo;
+            // Saving new random bounds during an ON cycle must not leave old
+            // numeric bounds controlling the packets until a later Freeze.
+            // Choose one new inclusive pair now, not one pair per packet.
+            if (randomizedPayloadRangeEnabled) {
+                choosePayloadRangeForCycleLocked();
+                if (cycleActive) cyclePayloadRangeChanged = true;
+            }
         }
     }
 
     public void setRandomPayloadRangeEnabled(boolean enabled) {
         synchronized (lock) {
+            if (randomizedPayloadRangeEnabled == enabled) return;
             randomizedPayloadRangeEnabled = enabled;
-            if (!enabled) {
-                payloadMin = fixedPayloadMin; payloadMax = fixedPayloadMax;
-                if (cycleActive && (cyclePayloadMin != payloadMin
-                        || cyclePayloadMax != payloadMax)) {
-                    cyclePayloadRangeChanged = true;
-                }
+            if (enabled) {
+                choosePayloadRangeForCycleLocked();
+            } else {
+                payloadMin = fixedPayloadMin;
+                payloadMax = fixedPayloadMax;
             }
+            if (cycleActive) cyclePayloadRangeChanged = true;
         }
     }
 
