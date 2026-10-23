@@ -704,9 +704,19 @@ public final class FreezeCore implements AutoCloseable {
                     int burstEnd = Math.min(all.size(), index + burstSize);
                     while (index < burstEnd) {
                         OutputSink output;
-                        synchronized (lock) {
-                            if (closed || session != generation || sink == null) return;
-                            output = sink;
+                        // A newer Freeze has priority over releases from completed cycles.
+                        // Preserve queued packets and resume after the newer Freeze ends.
+                        while (true) {
+                            synchronized (lock) {
+                                if (closed || session != generation || sink == null) return;
+                                expireVisualHoldLocked(System.nanoTime());
+                                if (!effectiveLocked()) {
+                                    output = sink;
+                                    break;
+                                }
+                            }
+                            try { Thread.sleep(5L); }
+                            catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
                         }
                         try {
                             output.emit(all.get(index));
