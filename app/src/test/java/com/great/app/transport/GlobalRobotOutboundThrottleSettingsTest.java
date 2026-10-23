@@ -76,4 +76,54 @@ public final class GlobalRobotOutboundThrottleSettingsTest {
         assertTrue(GlobalRobotOutboundThrottle.validLightRange(120, 120, 250, 250));
         assertTrue(GlobalRobotOutboundThrottle.validVisualPostRange(90, 90, 500, 500));
     }
+
+    private static com.great.app.core.PacketEnvelope outboundUdp() {
+        byte[] data = new byte[28];
+        data[0] = 0x45;
+        data[9] = 17;
+        return new com.great.app.core.PacketEnvelope(data, data.length,
+                com.great.app.core.PacketDirection.OUTBOUND, System.nanoTime());
+    }
+
+    @Test public void switchingLightOffFlushesHeldPacketWithoutDuplicate() throws Exception {
+        GlobalRobotOutboundThrottle engine = configured();
+        engine.setLightRange(300, 300, 500, 500);
+        engine.setLightStopOnWhiteReturn(true);
+        java.util.concurrent.CountDownLatch delivered = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicInteger count = new java.util.concurrent.atomic.AtomicInteger();
+        engine.attach(packet -> { count.incrementAndGet(); delivered.countDown(); });
+        assertTrue(engine.startLightForVisualFreeze());
+        assertEquals(com.great.app.core.PacketDecision.HOLD, engine.decide(outboundUdp()));
+        engine.setLightEnabled(false);
+        assertTrue("OFF must flush the queued packet", delivered.await(150,
+                java.util.concurrent.TimeUnit.MILLISECONDS));
+        Thread.sleep(330);
+        assertEquals("The canceled old timer must never emit again", 1, count.get());
+    }
+
+    @Test public void disablingWhiteLinkFlushesExpiredDurationPacket() throws Exception {
+        GlobalRobotOutboundThrottle engine = configured();
+        engine.setLightRange(300, 300, 25, 25);
+        engine.setLightStopOnWhiteReturn(true);
+        java.util.concurrent.CountDownLatch delivered = new java.util.concurrent.CountDownLatch(1);
+        engine.attach(packet -> delivered.countDown());
+        assertTrue(engine.startLightForVisualFreeze());
+        assertEquals(com.great.app.core.PacketDecision.HOLD, engine.decide(outboundUdp()));
+        Thread.sleep(45);
+        engine.setLightStopOnWhiteReturn(false);
+        assertTrue(delivered.await(150, java.util.concurrent.TimeUnit.MILLISECONDS));
+        assertFalse(engine.lightActive());
+    }
+
+    @Test public void periodicPendingPacketNotFlushedByVisualPostOff() throws Exception {
+        GlobalRobotOutboundThrottle engine = configured();
+        java.util.concurrent.CountDownLatch delivered = new java.util.concurrent.CountDownLatch(1);
+        engine.attach(packet -> delivered.countDown());
+        assertTrue(engine.finishPeriodicFreezeAndStartPostThrottle());
+        assertEquals(com.great.app.core.PacketDecision.HOLD, engine.decide(outboundUdp()));
+        engine.setVisualPostEnabled(false);
+        assertFalse("Independent periodic post delay must remain", delivered.await(20,
+                java.util.concurrent.TimeUnit.MILLISECONDS));
+        assertTrue(delivered.await(400, java.util.concurrent.TimeUnit.MILLISECONDS));
+    }
 }
