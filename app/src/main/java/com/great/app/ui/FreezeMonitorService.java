@@ -552,7 +552,15 @@ public final class FreezeMonitorService extends Service {
                 RobotFreezeOrchestrator.instance().onMonitoringResumed();
             }
             repositionOverlay();
-            setVisual(COLOR_NOT_READY, reason + " • surface refreshed, checking frames");
+            if ("No new captured frames".equals(reason) && lastValidFrameNanos > 0L) {
+                // Static scenes legitimately stop generating callbacks. Keep the
+                // last *observed* ARMED/WAITING color; a watchdog probe must not
+                // falsely make a healthy white baseline purple forever.
+                publicStatus = "Waiting for next captured change • previous "
+                        + engine.state();
+            } else {
+                setVisual(COLOR_NOT_READY, reason + " • surface refreshed, checking frames");
+            }
         } catch (Throwable e) {
             lastImageFrameNanos = System.nanoTime();
             if (surfaceRecoveryAttempts >= CaptureLivenessPolicy.FAST_RECOVERY_ATTEMPTS) {
