@@ -37,12 +37,13 @@ public final class FreezeCore implements AutoCloseable {
         private final int evicted;
         private final int payloadMin;
         private final int payloadMax;
+        private final boolean payloadRangeChanged;
         private final int[] trace;
         private final int traceCount;
 
         CycleStats(long startedAtMillis, String source, int arrived, int frozen,
                    int dropped, int released, int evicted, int payloadMin, int payloadMax,
-                   int[] trace, int traceCount) {
+                   boolean payloadRangeChanged, int[] trace, int traceCount) {
             this.startedAtMillis = startedAtMillis;
             this.source = source;
             this.arrived = arrived;
@@ -52,6 +53,7 @@ public final class FreezeCore implements AutoCloseable {
             this.evicted = evicted;
             this.payloadMin = payloadMin;
             this.payloadMax = payloadMax;
+            this.payloadRangeChanged = payloadRangeChanged;
             this.trace = trace;
             this.traceCount = traceCount;
         }
@@ -65,6 +67,7 @@ public final class FreezeCore implements AutoCloseable {
         public int evicted() { return evicted; }
         public int payloadMin() { return payloadMin; }
         public int payloadMax() { return payloadMax; }
+        public boolean payloadRangeChanged() { return payloadRangeChanged; }
         public int traceCount() { return traceCount; }
         public int traceValue(int index) { return trace[index]; }
         public int tracePayloadBytes(int index) { return trace[index] & TRACE_PAYLOAD_MASK; }
@@ -163,6 +166,7 @@ public final class FreezeCore implements AutoCloseable {
     private int cycleEvicted;
     private int cyclePayloadMin;
     private int cyclePayloadMax;
+    private boolean cyclePayloadRangeChanged;
     private int[] cycleTrace = new int[INITIAL_TRACE_CAPACITY];
     private int cycleTraceCount;
     private int evictTraceScanIndex;
@@ -307,7 +311,9 @@ public final class FreezeCore implements AutoCloseable {
             fixedPayloadMax = max;
             if (!randomizedPayloadRangeEnabled) {
                 payloadMin = min; payloadMax = max;
-                if (cycleActive) { cyclePayloadMin = min; cyclePayloadMax = max; }
+                if (cycleActive && (cyclePayloadMin != min || cyclePayloadMax != max)) {
+                    cyclePayloadRangeChanged = true;
+                }
             }
         }
     }
@@ -329,7 +335,10 @@ public final class FreezeCore implements AutoCloseable {
             randomizedPayloadRangeEnabled = enabled;
             if (!enabled) {
                 payloadMin = fixedPayloadMin; payloadMax = fixedPayloadMax;
-                if (cycleActive) { cyclePayloadMin = payloadMin; cyclePayloadMax = payloadMax; }
+                if (cycleActive && (cyclePayloadMin != payloadMin
+                        || cyclePayloadMax != payloadMax)) {
+                    cyclePayloadRangeChanged = true;
+                }
             }
         }
     }
@@ -560,6 +569,7 @@ public final class FreezeCore implements AutoCloseable {
         cycleEvicted = 0;
         cyclePayloadMin = payloadMin;
         cyclePayloadMax = payloadMax;
+        cyclePayloadRangeChanged = false;
         cycleTrace = new int[INITIAL_TRACE_CAPACITY];
         cycleTraceCount = 0;
         evictTraceScanIndex = 0;
@@ -572,13 +582,14 @@ public final class FreezeCore implements AutoCloseable {
         int[] heldTraceIds = buildHeldTraceIdsLocked(packets.size());
         CycleWork work = new CycleWork(cycleStartedAtMillis, cycleSource, cycleArrived,
                 cycleFrozen, cycleEvicted, cyclePayloadMin, cyclePayloadMax,
-                packets, trace, traceCount, heldTraceIds);
+                cyclePayloadRangeChanged, packets, trace, traceCount, heldTraceIds);
         cycleActive = false;
         cycleStartedAtMillis = 0L;
         cycleSource = "UNKNOWN";
         cycleArrived = 0;
         cycleFrozen = 0;
         cycleEvicted = 0;
+        cyclePayloadRangeChanged = false;
         cycleTrace = new int[INITIAL_TRACE_CAPACITY];
         cycleTraceCount = 0;
         evictTraceScanIndex = 0;
@@ -793,7 +804,8 @@ public final class FreezeCore implements AutoCloseable {
     private void publishCycle(CycleWork work) {
         CycleStats stats = new CycleStats(work.startedAtMillis, work.source, work.arrived,
                 work.frozen, work.dropped, work.released, work.evicted,
-                work.payloadMin, work.payloadMax, work.trace, work.traceCount);
+                work.payloadMin, work.payloadMax, work.payloadRangeChanged,
+                work.trace, work.traceCount);
         latestCycleStats = stats;
         CycleListener listener;
         synchronized (lock) { listener = cycleListener; }
@@ -809,6 +821,7 @@ public final class FreezeCore implements AutoCloseable {
         final int evicted;
         final int payloadMin;
         final int payloadMax;
+        final boolean payloadRangeChanged;
         final ArrayList<PacketEnvelope> packets;
         final int[] trace;
         final int traceCount;
@@ -817,7 +830,8 @@ public final class FreezeCore implements AutoCloseable {
         int released;
 
         CycleWork(long startedAtMillis, String source, int arrived, int frozen, int evicted,
-                  int payloadMin, int payloadMax, ArrayList<PacketEnvelope> packets,
+                  int payloadMin, int payloadMax, boolean payloadRangeChanged,
+                  ArrayList<PacketEnvelope> packets,
                   int[] trace, int traceCount, int[] heldTraceIds) {
             this.startedAtMillis = startedAtMillis;
             this.source = source;
@@ -826,6 +840,7 @@ public final class FreezeCore implements AutoCloseable {
             this.evicted = evicted;
             this.payloadMin = payloadMin;
             this.payloadMax = payloadMax;
+            this.payloadRangeChanged = payloadRangeChanged;
             this.packets = packets;
             this.trace = trace;
             this.traceCount = traceCount;
@@ -856,6 +871,7 @@ public final class FreezeCore implements AutoCloseable {
             cycleArrived = 0;
             cycleFrozen = 0;
             cycleEvicted = 0;
+            cyclePayloadRangeChanged = false;
             cycleTrace = new int[INITIAL_TRACE_CAPACITY];
             cycleTraceCount = 0;
             evictTraceScanIndex = 0;
