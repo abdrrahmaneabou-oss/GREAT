@@ -17,6 +17,7 @@ import android.provider.Settings;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
+import android.view.WindowInsets;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -224,6 +225,23 @@ public final class GreatMainActivity extends Activity {
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
+        // Android 15/16 enforce edge-to-edge for modern targets. Keep the scrolling
+        // cards below the real status bar and above the gesture/navigation area.
+        scroll.setOnApplyWindowInsetsListener((view, insets) -> {
+            int top;
+            int bottom;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                top = insets.getInsets(WindowInsets.Type.statusBars()).top;
+                bottom = insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
+            } else {
+                top = insets.getSystemWindowInsetTop();
+                bottom = insets.getSystemWindowInsetBottom();
+            }
+            if (view.getPaddingTop() != top || view.getPaddingBottom() != bottom) {
+                view.setPadding(0, top, 0, bottom);
+            }
+            return insets;
+        });
         scroll.addView(root, new ScrollView.LayoutParams(-1, -2));
         return scroll;
     }
@@ -735,8 +753,14 @@ public final class GreatMainActivity extends Activity {
     }
 
     private void adjustRobotTimeout(int deltaTenths) {
-        monitorSettings.setMaxFreezeTenths(monitorSettings.maxFreezeTenths() + deltaTenths);
+        int old = monitorSettings.maxFreezeTenths();
+        int updated = monitorSettings.setMaxFreezeTenths(old + deltaTenths);
+        if (updated == old) return;
         if (robotTimeoutValue != null) robotTimeoutValue.setText(formatRobotTimeout());
+        if (FreezeMonitorService.isRunning()) {
+            startService(new Intent(this, FreezeMonitorService.class)
+                    .setAction(FreezeMonitorService.ACTION_REFRESH_TIMEOUT));
+        }
     }
 
     private String formatRobotTimeout() {
