@@ -653,15 +653,14 @@ public final class FreezeCore implements AutoCloseable {
     private void release(CycleWork work, long session) {
         ArrayList<PacketEnvelope> all = work.packets;
         int[] traceIds = work.heldTraceIds;
-        boolean dropEnabled = releaseDropEnabled;
-        boolean burstEnabled = releaseBurstEnabled;
-        boolean delayEnabled = releaseDelayEnabled;
-        int dropMin = releaseDropMinPercent;
-        int dropMax = releaseDropMaxPercent;
-        int burstMin = releaseBurstMin;
-        int burstMax = releaseBurstMax;
-        int delayMin = releaseDelayMinMs;
-        int delayMax = releaseDelayMaxMs;
+        final boolean dropEnabled;
+        final int dropMin;
+        final int dropMax;
+        synchronized (lock) {
+            dropEnabled = releaseDropEnabled;
+            dropMin = releaseDropMinPercent;
+            dropMax = releaseDropMaxPercent;
+        }
         try {
             if (!all.isEmpty()) {
                 int dropPercent = dropEnabled ? randomInclusive(dropMin, dropMax) : 0;
@@ -693,6 +692,14 @@ public final class FreezeCore implements AutoCloseable {
                 }
                 int index = 0;
                 while (index < all.size()) {
+                    final boolean burstEnabled;
+                    final int burstMin;
+                    final int burstMax;
+                    synchronized (lock) {
+                        burstEnabled = releaseBurstEnabled;
+                        burstMin = releaseBurstMin;
+                        burstMax = releaseBurstMax;
+                    }
                     int burstSize = burstEnabled ? randomInclusive(burstMin, burstMax) : (all.size() - index);
                     int burstEnd = Math.min(all.size(), index + burstSize);
                     while (index < burstEnd) {
@@ -709,11 +716,26 @@ public final class FreezeCore implements AutoCloseable {
                         } catch (Exception e) { return; }
                         index++;
                     }
+                    // OFF is checked between batches, rather than using stale task-local flags.
+                    final boolean delayEnabled;
+                    final int delayMin;
+                    final int delayMax;
+                    synchronized (lock) {
+                        delayEnabled = releaseDelayEnabled;
+                        delayMin = releaseDelayMinMs;
+                        delayMax = releaseDelayMaxMs;
+                    }
                     if (index < all.size() && delayEnabled) {
                         int delayMs = randomInclusive(delayMin, delayMax);
                         if (delayMs > 0) {
-                            try { Thread.sleep(delayMs); }
-                            catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                            try {
+                                // Recheck OFF quickly even if a long delay was selected.
+                                long until = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(delayMs);
+                                while (releaseDelayEnabled && System.nanoTime() < until) {
+                                    long ms = TimeUnit.NANOSECONDS.toMillis(until - System.nanoTime());
+                                    Thread.sleep(Math.max(1L, Math.min(20L, ms)));
+                                }
+                            } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
                         }
                     }
                 }
