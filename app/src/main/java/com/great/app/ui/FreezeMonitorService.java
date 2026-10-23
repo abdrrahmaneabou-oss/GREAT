@@ -113,9 +113,9 @@ public final class FreezeMonitorService extends Service {
     // the absence of two redundant frames as absence of white.
     private static final long WHITE_CONFIRM_INTERVAL_MS = 55L;
     private static final long WHITE_CONFIRM_MAX_AGE_NS = TimeUnit.MILLISECONDS.toNanos(280);
-    private PixelTriggerMonitorEngine.Sample pendingWhite;
-    private long pendingWhiteAtNanos;
-    private int repeatedWhiteConfirms;
+    private volatile PixelTriggerMonitorEngine.Sample pendingWhite;
+    private volatile long pendingWhiteAtNanos;
+    private volatile int repeatedWhiteConfirms;
     private final Runnable confirmStationaryWhite = new Runnable() {
         @Override public void run() {
             if (shuttingDown || !running || !monitoringActive || editing
