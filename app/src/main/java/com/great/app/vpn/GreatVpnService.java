@@ -37,6 +37,9 @@ import com.great.app.transport.TunnelTransport;
 import com.great.app.transport.TransportState;
 
 import java.util.Arrays;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /** Owns VPN lifecycle. It never contains capability rules or UI logic. */
 public final class GreatVpnService extends VpnService {
@@ -48,6 +51,11 @@ public final class GreatVpnService extends VpnService {
     private static final String KEY_DESIRED = "vpn_start_requested";
     private static volatile GreatVpnService activeService;
     private static volatile String lastStartFailure;
+    private final ScheduledExecutorService healthChecks = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread t = new Thread(r, "GREAT-VPN-Health");
+        t.setDaemon(true);
+        return t;
+    });
     private volatile TunnelTransport transport;
 
     public static boolean isTransportConnected() {
@@ -94,6 +102,28 @@ public final class GreatVpnService extends VpnService {
         filter.addAction(Intent.ACTION_PACKAGE_REPLACED);
         filter.addDataScheme("package");
         registerReceiver(packageChanges, filter);
+        healthChecks.scheduleWithFixedDelay(this::checkTransportHealth,
+                6L, 6L, TimeUnit.SECONDS);
+    }
+
+    private void checkTransportHealth() {
+        try {
+            if (!getSharedPreferences(PREF_RUNTIME, MODE_PRIVATE)
+                    .getBoolean(KEY_DESIRED, false)) return;
+            TunnelTransport observed = transport;
+            if (observed == null) return; // startup is already underway
+            TransportState state = observed.state();
+            if (state != TransportState.FAILED && state != TransportState.STOPPED) return;
+            synchronized (this) {
+                // A STOP may have arrived while the watchdog was waiting.
+                if (!getSharedPreferences(PREF_RUNTIME, MODE_PRIVATE)
+                        .getBoolean(KEY_DESIRED, false) || transport != observed) return;
+                updateVpnNotification("Tunnel interrupted • recovering automatically");
+                startEngine();
+            }
+        } catch (RuntimeException error) {
+            lastStartFailure = "VPN recovery failed (" + error.getClass().getSimpleName() + ")";
+        }
     }
 
     private void refreshTargets() {
@@ -187,7 +217,10 @@ public final class GreatVpnService extends VpnService {
     private synchronized void startEngine() {
         if (transport != null) {
             if (transport.state() != TransportState.FAILED
-                    && transport.state() != TransportState.STOPPED) return;
+                    && transport.state() != TransportState.STOPPED) {
+                updateVpnNotification("Connected • background VPN service active");
+                return;
+            }
             transport.close();
             transport = null;
         }
@@ -281,6 +314,7 @@ public final class GreatVpnService extends VpnService {
     }
 
     @Override public void onDestroy() {
+        healthChecks.shutdownNow();
         targets.unregister(targetChanges);
         unregisterReceiver(packageChanges);
         stopEngine();
