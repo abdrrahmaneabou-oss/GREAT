@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
@@ -55,6 +56,11 @@ public final class FreezeMonitorService extends Service {
 
     private static final int NOTIFICATION_ID = 4107;
     private static final String CHANNEL_ID = "great_visual_monitor";
+    private static final String RECOVERY_CHANNEL_ID = "great_visual_monitor_recovery";
+    private static final int RECOVERY_NOTIFICATION_ID = 4109;
+    private static final long HEALTH_INTERVAL_MS = 3_000L;
+    private static final long STALE_CAPTURE_NS = TimeUnit.SECONDS.toNanos(14);
+    private static final int MAX_SURFACE_REBIND_ATTEMPTS = 3;
     private static final int COLOR_WAITING = Color.rgb(255, 184, 77);
     private static final int COLOR_ARMED = Color.rgb(60, 220, 120);
     private static final int COLOR_FIRED = Color.rgb(255, 80, 95);
@@ -90,6 +96,31 @@ public final class FreezeMonitorService extends Service {
     private volatile boolean captureResizePending;
     private volatile boolean captureSessionEnded;
     private static volatile long lastValidFrameNanos;
+    private volatile long lastImageFrameNanos;
+    private volatile int frameFailures;
+    private volatile int surfaceRecoveryAttempts;
+    private volatile boolean surfaceRecoveryPending;
+    private int resizeFailures;
+    private final Runnable captureWatchdog = new Runnable() {
+        @Override public void run() {
+            try {
+                if (!shuttingDown && running && monitoringActive
+                        && settings.enabled() && settings.monitoringEnabled()
+                        && projection != null && virtualDisplay != null && !captureResizePending) {
+                    long idleNs = System.nanoTime() - lastImageFrameNanos;
+                    if ((frameFailures >= 4 || idleNs > STALE_CAPTURE_NS)
+                            && surfaceRecoveryAttempts < MAX_SURFACE_REBIND_ATTEMPTS
+                            && !surfaceRecoveryPending) {
+                        surfaceRecoveryPending = true;
+                        mainHandler.post(() -> recoverCaptureSurface(
+                                frameFailures >= 4 ? "Repeated unusable images" : "No new captured frames"));
+                    }
+                }
+            } finally {
+                if (!shuttingDown) captureHandler.postDelayed(this, HEALTH_INTERVAL_MS);
+            }
+        }
+    };
 
     public static boolean isRunning() { return running; }
     public static boolean isEditing() { return editing; }
@@ -116,6 +147,7 @@ public final class FreezeMonitorService extends Service {
         captureThread.start();
         captureHandler = new Handler(captureThread.getLooper());
         ensureNotificationChannel();
+        captureHandler.postDelayed(captureWatchdog, HEALTH_INTERVAL_MS);
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -219,6 +251,12 @@ public final class FreezeMonitorService extends Service {
         }
         ensureOverlay();
         lastValidFrameNanos = 0L;
+        lastImageFrameNanos = System.nanoTime();
+        frameFailures = 0;
+        surfaceRecoveryAttempts = 0;
+        resizeFailures = 0;
+        surfaceRecoveryPending = false;
+        clearRecoveryNotification();
         captureSessionEnded = false;
         running = true;
         editing = false;
@@ -253,8 +291,10 @@ public final class FreezeMonitorService extends Service {
         Image image = null;
         boolean resizeAfterFrame = false;
         try {
+            if (reader != imageReader) return; // late callback from a replaced surface
             image = reader.acquireLatestImage();
             if (image == null) return;
+            lastImageFrameNanos = System.nanoTime();
 
             Point current = screenSize();
             if ((current.x != captureWidth || current.y != captureHeight) && !captureResizePending) {
@@ -267,6 +307,8 @@ public final class FreezeMonitorService extends Service {
                     || !settings.monitoringEnabled()) return;
             PixelTriggerMonitorEngine.Sample sample = sampleImage(image);
             if (sample != null) {
+                frameFailures = 0;
+                surfaceRecoveryAttempts = 0;
                 lastValidFrameNanos = System.nanoTime();
                 synchronized (engine) {
                     engine.process(sample);
@@ -278,8 +320,11 @@ public final class FreezeMonitorService extends Service {
                         setVisual(color, "Capture recovered • " + state);
                     }
                 }
+            } else {
+                frameFailures++;
             }
         } catch (Throwable error) {
+            frameFailures++;
             // A single corrupt frame must not turn an ON session into a misleading OFF state.
             mainHandler.post(() -> {
                 if (running && monitoringActive && !shuttingDown) {
@@ -641,6 +686,7 @@ public final class FreezeMonitorService extends Service {
         editing = false;
         monitoringActive = false;
         captureResizePending = false;
+        surfaceRecoveryPending = false;
         cancelFreezeTimeout();
         RobotFreezeOrchestrator.instance().resetVisualCycle();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
@@ -691,6 +737,7 @@ public final class FreezeMonitorService extends Service {
             if (imageReader != null) try { imageReader.close(); } catch (Throwable ignored) { }
             if (projection != null) try { projection.stop(); } catch (Throwable ignored) { }
         }
+        if (captureHandler != null) captureHandler.removeCallbacks(captureWatchdog);
         if (captureThread != null) captureThread.quitSafely();
         if (!captureSessionEnded) publicStatus = "Monitor stopped";
         super.onDestroy();
