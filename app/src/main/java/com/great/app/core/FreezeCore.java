@@ -407,14 +407,31 @@ public final class FreezeCore implements AutoCloseable {
             throw new IllegalArgumentException("Ramp hold percentages must be 0..100 and min <= max");
         }
         synchronized (lock) {
+            if (rampDurationMinMs == durationMinMs && rampDurationMaxMs == durationMaxMs
+                    && rampStage1MinPercent == stage1MinPercent
+                    && rampStage1MaxPercent == stage1MaxPercent
+                    && rampStage2MinPercent == stage2MinPercent
+                    && rampStage2MaxPercent == stage2MaxPercent) return;
             rampDurationMinMs = durationMinMs;
             rampDurationMaxMs = durationMaxMs;
             rampStage1MinPercent = stage1MinPercent;
             rampStage1MaxPercent = stage1MaxPercent;
             rampStage2MinPercent = stage2MinPercent;
             rampStage2MaxPercent = stage2MaxPercent;
-            // A zero-duration OFF request must cancel the ramp of the current cycle too.
-            if (durationMinMs == 0 && durationMaxMs == 0) clearRampLocked();
+            if (durationMinMs == 0 && durationMaxMs == 0) {
+                // OFF cancels the active ramp, not only next cycle's profile.
+                clearRampLocked();
+            } else if (cycleActive && effectiveLocked()) {
+                // Saving a new ON profile applies to the ongoing cycle. Keep the
+                // original ramp start while active, and start now if it was OFF.
+                if (rampStartedNanos == 0L) rampStartedNanos = System.nanoTime();
+                rampDurationNanos = TimeUnit.MILLISECONDS.toNanos(
+                        randomInclusiveLocked(durationMinMs, durationMaxMs));
+                rampStage1HoldPercent = randomInclusiveLocked(
+                        stage1MinPercent, stage1MaxPercent);
+                rampStage2HoldPercent = randomInclusiveLocked(
+                        stage2MinPercent, stage2MaxPercent);
+            }
         }
     }
 
