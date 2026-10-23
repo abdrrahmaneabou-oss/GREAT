@@ -58,6 +58,13 @@ public final class GreatVpnService extends VpnService {
     });
     private volatile TunnelTransport transport;
 
+    /** Persistent global OFF: prevent sticky restarts before stopping services. */
+    public static void disableAutomaticRestart(Context context) {
+        context.getApplicationContext()
+                .getSharedPreferences(PREF_RUNTIME, Context.MODE_PRIVATE)
+                .edit().putBoolean(KEY_DESIRED, false).commit();
+    }
+
     public static boolean isTransportConnected() {
         GreatVpnService service = activeService;
         TunnelTransport current = service == null ? null : service.transport;
