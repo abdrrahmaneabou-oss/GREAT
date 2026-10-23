@@ -86,12 +86,22 @@ public final class FreezeMonitorService extends Service {
     private volatile int captureHeight;
     private volatile boolean captureResizePending;
     private volatile boolean captureSessionEnded;
-    private volatile long lastValidFrameNanos;
+    private static volatile long lastValidFrameNanos;
 
     public static boolean isRunning() { return running; }
     public static boolean isEditing() { return editing; }
     public static boolean isMonitoringActive() { return running && monitoringActive && !editing; }
-    public static String status() { return publicStatus; }
+    public static String status() {
+        if (!isMonitoringActive()) return publicStatus;
+        long last = lastValidFrameNanos;
+        if (last <= 0L) return publicStatus + " • awaiting first captured frame";
+        long age = java.util.concurrent.TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - last);
+        if (age >= 10L) {
+            // A static screen may legitimately yield no new frames. Don't imply permission loss.
+            return publicStatus + " • no new image frames for " + age + "s (possibly static)";
+        }
+        return publicStatus;
+    }
 
     @Override public void onCreate() {
         super.onCreate();
@@ -117,6 +127,7 @@ public final class FreezeMonitorService extends Service {
             int resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED);
             Intent resultData = parcelableIntent(intent, EXTRA_RESULT_DATA);
             if (resultCode != Activity.RESULT_OK || resultData == null) {
+                captureSessionEnded = true;
                 setNotReady("Screen capture permission required");
                 stopSelf();
                 return START_NOT_STICKY;
@@ -158,6 +169,7 @@ public final class FreezeMonitorService extends Service {
 
     private void startMonitor(int resultCode, Intent resultData) {
         if (!Settings.canDrawOverlays(this)) {
+            captureSessionEnded = true;
             setNotReady("Overlay permission required");
             stopSelf();
             return;
@@ -184,12 +196,14 @@ public final class FreezeMonitorService extends Service {
                 }, mainHandler);
                 createCapture();
             } catch (Throwable e) {
+                captureSessionEnded = true;
                 setNotReady("Screen capture failed");
                 stopSelf();
                 return;
             }
         }
         ensureOverlay();
+        lastValidFrameNanos = 0L;
         captureSessionEnded = false;
         running = true;
         editing = false;
@@ -238,7 +252,16 @@ public final class FreezeMonitorService extends Service {
             PixelTriggerMonitorEngine.Sample sample = sampleImage(image);
             if (sample != null) {
                 lastValidFrameNanos = System.nanoTime();
-                synchronized (engine) { engine.process(sample); }
+                synchronized (engine) {
+                    engine.process(sample);
+                    if (monitorColor == COLOR_NOT_READY) {
+                        PixelTriggerMonitorEngine.State state = engine.state();
+                        int color = state == PixelTriggerMonitorEngine.State.FIRED ? COLOR_FIRED
+                                : state == PixelTriggerMonitorEngine.State.ARMED ? COLOR_ARMED
+                                : COLOR_WAITING;
+                        setVisual(color, "Capture recovered • " + state);
+                    }
+                }
             }
         } catch (Throwable error) {
             // A single corrupt frame must not turn an ON session into a misleading OFF state.
