@@ -172,6 +172,7 @@ public final class FreezeCore implements AutoCloseable {
     private boolean visualMonitorHold;
     private boolean periodicMonitorHold;
     private long visualFreezeDeadlineNanos;
+    private long visualFreezeStartedNanos;
     private boolean closed;
     private long generation;
 
@@ -472,7 +473,12 @@ public final class FreezeCore implements AutoCloseable {
     public void setHoldTrigger(boolean active) {
         synchronized (lock) {
             if (closed || visualMonitorHold == active) return;
-            if (!active) visualFreezeDeadlineNanos = 0L;
+            if (!active) {
+                visualFreezeDeadlineNanos = 0L;
+                visualFreezeStartedNanos = 0L;
+            } else {
+                visualFreezeStartedNanos = System.nanoTime();
+            }
             boolean wasEffective = effectiveLocked();
             visualMonitorHold = active;
             boolean nowEffective = effectiveLocked();
@@ -512,7 +518,11 @@ public final class FreezeCore implements AutoCloseable {
         if (durationMs <= 0) throw new IllegalArgumentException("durationMs must be positive");
         synchronized (lock) {
             if (visualMonitorHold) {
-                visualFreezeDeadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(durationMs);
+                // Bound to the original trigger instant. Editing the limit midway
+                // must not silently grant an extra full duration from the edit time.
+                visualFreezeDeadlineNanos = visualFreezeStartedNanos
+                        + TimeUnit.MILLISECONDS.toNanos(durationMs);
+                expireVisualHoldLocked(System.nanoTime());
             }
         }
     }
@@ -523,6 +533,7 @@ public final class FreezeCore implements AutoCloseable {
         boolean before = effectiveLocked();
         visualMonitorHold = false;
         visualFreezeDeadlineNanos = 0L;
+        visualFreezeStartedNanos = 0L;
         if (before && !effectiveLocked()) {
             clearRampLocked();
             releaseBufferedLocked();
@@ -838,6 +849,7 @@ public final class FreezeCore implements AutoCloseable {
             visualMonitorHold = false;
             periodicMonitorHold = false;
             visualFreezeDeadlineNanos = 0L;
+            visualFreezeStartedNanos = 0L;
             cycleActive = false;
             cycleStartedAtMillis = 0L;
             cycleSource = "UNKNOWN";
