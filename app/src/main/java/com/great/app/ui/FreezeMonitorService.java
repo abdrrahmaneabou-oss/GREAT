@@ -351,6 +351,7 @@ public final class FreezeMonitorService extends Service {
      * ImageReader surface so probe coordinates remain aligned with the visible overlay.
      */
     private void resizeCaptureToCurrentScreen() {
+        ImageReader replacement = null;
         try {
             if (shuttingDown || projection == null || virtualDisplay == null) return;
             Point size = screenSize();
@@ -359,7 +360,7 @@ public final class FreezeMonitorService extends Service {
             if (width == captureWidth && height == captureHeight) return;
 
             int density = getResources().getDisplayMetrics().densityDpi;
-            ImageReader replacement = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2);
+            replacement = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 3);
             replacement.setOnImageAvailableListener(this::onImageAvailable, captureHandler);
 
             virtualDisplay.resize(width, height, density);
@@ -367,6 +368,7 @@ public final class FreezeMonitorService extends Service {
 
             ImageReader old = imageReader;
             imageReader = replacement;
+            replacement = null; // now owned by this service
             captureWidth = width;
             captureHeight = height;
             if (old != null) {
@@ -390,6 +392,11 @@ public final class FreezeMonitorService extends Service {
             mainHandler.postDelayed(() -> recoverCaptureSurface("Display resize failed"), 700L);
         } finally {
             captureResizePending = false;
+            if (replacement != null) {
+                try { replacement.setOnImageAvailableListener(null, null); }
+                catch (RuntimeException ignored) { }
+                try { replacement.close(); } catch (RuntimeException ignored) { }
+            }
         }
     }
 
