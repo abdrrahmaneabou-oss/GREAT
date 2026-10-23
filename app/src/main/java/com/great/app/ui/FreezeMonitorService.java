@@ -889,6 +889,11 @@ public final class FreezeMonitorService extends Service {
                 .setContentText(monitoringActive ? "Monitoring ON • " + publicStatus
                         : editing ? "Position editing • monitoring paused" : "Monitoring paused")
                 .setContentIntent(open)
+                // Inspect the actual RGB value without leaving the target game.
+                // It contains only the five pixel probe statistics, not a screenshot.
+                .setSubText(lastProbeReading)
+                .setStyle(new Notification.BigTextStyle()
+                        .bigText(publicStatus + " • " + lastProbeReading))
                 .setCategory(Notification.CATEGORY_SERVICE)
                 .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setOnlyAlertOnce(true)
