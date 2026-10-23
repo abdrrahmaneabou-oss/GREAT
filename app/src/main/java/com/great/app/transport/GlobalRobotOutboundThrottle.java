@@ -5,6 +5,10 @@ import com.great.app.core.PacketDirection;
 import com.great.app.core.PacketEnvelope;
 
 import java.util.Objects;
+import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.Random;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -40,6 +44,7 @@ public final class GlobalRobotOutboundThrottle {
 
     private enum LightOwner { NONE, VISUAL, PERIODIC }
     private static final GlobalRobotOutboundThrottle INSTANCE = new GlobalRobotOutboundThrottle(new Random());
+    private static final int MAX_PENDING_OUTBOUND = 8192;
 
     private final Object lock = new Object();
     private final Random rng;
@@ -50,6 +55,32 @@ public final class GlobalRobotOutboundThrottle {
     });
     private final AtomicLong seen = new AtomicLong();
     private final AtomicLong delayed = new AtomicLong();
+    private final AtomicLong backlogBypassed = new AtomicLong();
+    // One active scheduled delivery for each held UDP packet. Under the same
+    // lock as the switches, OFF reschedules pending work without packet loss.
+    private final HashMap<Long, PendingDelivery> pending = new HashMap<>();
+    private long nextPendingId;
+
+    private static final class PendingDelivery {
+        final long id;
+        final OutputSink output;
+        final PacketEnvelope packet;
+        final long generation;
+        long lightDueNanos;
+        long postDueNanos;
+        ScheduledFuture<?> future;
+        boolean finished;
+
+        PendingDelivery(long id, OutputSink output, PacketEnvelope packet, long generation,
+                        long lightDueNanos, long postDueNanos) {
+            this.id = id;
+            this.output = output;
+            this.packet = packet;
+            this.generation = generation;
+            this.lightDueNanos = lightDueNanos;
+            this.postDueNanos = postDueNanos;
+        }
+    }
 
     private boolean featureEnabled;
 
@@ -95,13 +126,18 @@ public final class GlobalRobotOutboundThrottle {
     public void setFeatureEnabled(boolean enabled) {
         synchronized (lock) {
             featureEnabled = enabled;
-            if (!enabled) clearAllLocked();
+            if (!enabled) {
+                clearAllLocked();
+                expeditePendingLocked(true, true);
+            }
         }
     }
 
     public boolean featureEnabled() { synchronized (lock) { return featureEnabled; } }
     public long seen() { return seen.get(); }
     public long delayed() { return delayed.get(); }
+    /** Overflow packets pass unthrottled rather than being silently discarded. */
+    public long backlogBypassed() { return backlogBypassed.get(); }
 
     public boolean lightActive() {
         synchronized (lock) {
@@ -113,7 +149,10 @@ public final class GlobalRobotOutboundThrottle {
     public void setLightEnabled(boolean enabled) {
         synchronized (lock) {
             lightEnabled = enabled;
-            if (!enabled) clearLightLocked();
+            if (!enabled) {
+                clearLightLocked();
+                expeditePendingLocked(true, false);
+            }
         }
     }
 
@@ -133,6 +172,7 @@ public final class GlobalRobotOutboundThrottle {
                 } else {
                     lightEndsNanos = lightStartedNanos + lightDurationNanos;
                     expireTimedPhasesLocked(System.nanoTime());
+                    if (!lightActive) expeditePendingLocked(true, false);
                 }
             }
         }
@@ -165,7 +205,10 @@ public final class GlobalRobotOutboundThrottle {
     public void setVisualPostEnabled(boolean enabled) {
         synchronized (lock) {
             visualPostEnabled = enabled;
-            if (!enabled && postVisualOwner) clearPostLocked();
+            if (!enabled && postVisualOwner) {
+                clearPostLocked();
+                expeditePendingLocked(false, true);
+            }
         }
     }
 
@@ -202,7 +245,11 @@ public final class GlobalRobotOutboundThrottle {
     }
 
     public void attach(OutputSink output) {
-        synchronized (lock) { sink = Objects.requireNonNull(output); transportGeneration++; }
+        synchronized (lock) {
+            discardPendingLocked();
+            sink = Objects.requireNonNull(output);
+            transportGeneration++;
+        }
     }
 
     public void detach(OutputSink output) {
@@ -210,6 +257,7 @@ public final class GlobalRobotOutboundThrottle {
             if (sink == output) {
                 sink = null;
                 transportGeneration++;
+                discardPendingLocked();
                 clearAllLocked();
             }
         }
@@ -229,6 +277,7 @@ public final class GlobalRobotOutboundThrottle {
         // A new Robot Freeze supersedes the previous cycle's post phase.
         clearPostLocked();
         clearLightLocked();
+        expeditePendingLocked(true, true);
         if (!featureEnabled || sink == null || !lightEnabled) return false;
 
         int chosenStartMs = randomInclusiveLocked(lightStartMinMs, lightStartMaxMs);
@@ -255,6 +304,7 @@ public final class GlobalRobotOutboundThrottle {
         synchronized (lock) {
             if (lightActive && lightOwner == LightOwner.VISUAL && lightWhiteLinkedForCycle) {
                 clearLightLocked();
+                expeditePendingLocked(true, false);
             }
             return startPostThrottleLocked(true,
                     visualPostStartMinMs, visualPostStartMaxMs,
@@ -276,37 +326,92 @@ public final class GlobalRobotOutboundThrottle {
     }
 
     public boolean startFromRobotWhiteReturn() { return false; }
-    public void cancelActiveCycle() { synchronized (lock) { clearAllLocked(); } }
+    public void cancelActiveCycle() {
+        synchronized (lock) {
+            clearAllLocked();
+            expeditePendingLocked(true, true);
+        }
+    }
 
     public PacketDecision decide(PacketEnvelope packet) {
         if (packet.direction() != PacketDirection.OUTBOUND || !isIpv4Udp(packet)) return PacketDecision.PASS;
         seen.incrementAndGet();
 
-        final OutputSink output;
-        final long generation;
-        final long delayNanos;
         synchronized (lock) {
             if (!featureEnabled || sink == null) return PacketDecision.PASS;
             long now = System.nanoTime();
             expireTimedPhasesLocked(now);
             if (!lightActive && !postActive) return PacketDecision.PASS;
 
+            // One decision uses complete settings and the real selected phase
+            // delays. Never combine a stale ON state with a newly disabled phase.
             long lightDelay = lightActive ? nextLightDelayLocked(now) : 0L;
             long postDelay = postActive ? nextPostFreezeDelayLocked(now) : 0L;
-            // If both phases overlap, one packet is scheduled once using the stronger delay.
-            delayNanos = Math.max(lightDelay, postDelay);
-            if (delayNanos <= 0L) return PacketDecision.PASS;
-            output = sink;
-            generation = transportGeneration;
-        }
+            if (Math.max(lightDelay, postDelay) <= 0L) return PacketDecision.PASS;
 
-        byte[] copy = new byte[packet.length()];
-        System.arraycopy(packet.data(), 0, copy, 0, copy.length);
-        PacketEnvelope held = new PacketEnvelope(copy, copy.length,
-                PacketDirection.OUTBOUND, packet.monotonicNanos());
-        delayed.incrementAndGet();
-        scheduler.schedule(() -> emitIfCurrent(output, held, generation), delayNanos, TimeUnit.NANOSECONDS);
-        return PacketDecision.HOLD;
+            // Bounded memory: under an impossible backlog, bypass rather than
+            // silently drop a packet. The bypass count is exposed for diagnostics.
+            if (pending.size() >= MAX_PENDING_OUTBOUND) {
+                backlogBypassed.incrementAndGet();
+                return PacketDecision.PASS;
+            }
+            byte[] copy = new byte[packet.length()];
+            System.arraycopy(packet.data(), 0, copy, 0, copy.length);
+            PacketEnvelope held = new PacketEnvelope(copy, copy.length,
+                    PacketDirection.OUTBOUND, packet.monotonicNanos());
+            PendingDelivery delivery = new PendingDelivery(++nextPendingId,
+                    sink, held, transportGeneration,
+                    lightDelay > 0L ? now + lightDelay : 0L,
+                    postDelay > 0L ? now + postDelay : 0L);
+            pending.put(delivery.id, delivery);
+            try {
+                schedulePendingLocked(delivery);
+            } catch (RejectedExecutionException e) {
+                pending.remove(delivery.id);
+                backlogBypassed.incrementAndGet();
+                return PacketDecision.PASS;
+            }
+            delayed.incrementAndGet();
+            return PacketDecision.HOLD;
+        }
+    }
+
+    private void schedulePendingLocked(PendingDelivery delivery) {
+        if (delivery.future != null) delivery.future.cancel(false);
+        long due = Math.max(delivery.lightDueNanos, delivery.postDueNanos);
+        long remaining = Math.max(0L, due - System.nanoTime());
+        delivery.future = scheduler.schedule(() -> dispatchPending(delivery),
+                remaining, TimeUnit.NANOSECONDS);
+    }
+
+    private void dispatchPending(PendingDelivery delivery) {
+        synchronized (lock) {
+            if (delivery.finished) return;
+            delivery.finished = true;
+            pending.remove(delivery.id);
+            if (sink != delivery.output || transportGeneration != delivery.generation) return;
+        }
+        try { delivery.output.emit(delivery.packet); } catch (Exception ignored) { }
+    }
+
+    private void expeditePendingLocked(boolean clearLight, boolean clearPost) {
+        for (PendingDelivery delivery : new ArrayList<>(pending.values())) {
+            if (delivery.finished) continue;
+            boolean affected = (clearLight && delivery.lightDueNanos > 0L)
+                    || (clearPost && delivery.postDueNanos > 0L);
+            if (!affected) continue;
+            if (clearLight) delivery.lightDueNanos = 0L;
+            if (clearPost) delivery.postDueNanos = 0L;
+            schedulePendingLocked(delivery);
+        }
+    }
+
+    private void discardPendingLocked() {
+        for (PendingDelivery delivery : pending.values()) {
+            delivery.finished = true;
+            if (delivery.future != null) delivery.future.cancel(false);
+        }
+        pending.clear();
     }
 
     private long nextLightDelayLocked(long now) {
@@ -390,11 +495,6 @@ public final class GlobalRobotOutboundThrottle {
         if (postActive && postEndsNanos > 0L && now >= postEndsNanos) {
             clearPostLocked();
         }
-    }
-
-    private void emitIfCurrent(OutputSink output, PacketEnvelope packet, long generation) {
-        synchronized (lock) { if (sink != output || transportGeneration != generation) return; }
-        try { output.emit(packet); } catch (Exception ignored) { }
     }
 
     private void clearAllLocked() {
