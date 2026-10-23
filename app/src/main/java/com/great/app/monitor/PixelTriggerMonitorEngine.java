@@ -60,6 +60,21 @@ public final class PixelTriggerMonitorEngine {
             return count > 0 && (luminance(probes[0]) <= FIRE_MAX_LUMINANCE
                     || averageLuminance <= FIRE_MAX_LUMINANCE);
         }
+
+        /**
+         * The trigger is disappearance of the calibrated white, NOT just black.
+         * If the white center was what armed the detector, only that same center
+         * is authoritative for losing white. Otherwise the white quorum is.
+         */
+        public boolean hasLostBaselineWhite(Sample reference) {
+            if (reference == null || count == 0 || !isProbeDepartureFrom(this, reference)) {
+                return false;
+            }
+            if (reference.count() > 0 && isPackedWhite(reference.probe(0))) {
+                return !isPackedWhite(probes[0]);
+            }
+            return !isArmingWhite();
+        }
     }
 
     private final Listener listener;
@@ -113,7 +128,7 @@ public final class PixelTriggerMonitorEngine {
         whiteFrames.clear();
 
         if (!robotPolicyEnabled) {
-            if (baseline != null && isProbeDepartureFrom(sample, baseline) && sample.isFireLuminance()) {
+            if (sample.hasLostBaselineWhite(baseline)) {
                 setState(State.FIRED);
             }
             return;
@@ -127,7 +142,7 @@ public final class PixelTriggerMonitorEngine {
             return;
         }
 
-        if (baseline == null || !isProbeDepartureFrom(sample, baseline) || !sample.isFireLuminance()) return;
+        if (!sample.hasLostBaselineWhite(baseline)) return;
         if (robotFreeze.periodicFreezeActive()) return;
 
         if (!robotFreeze.allowVisualFreeze()) {
