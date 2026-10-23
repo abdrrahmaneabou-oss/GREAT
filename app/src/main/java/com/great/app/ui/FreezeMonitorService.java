@@ -109,6 +109,54 @@ public final class FreezeMonitorService extends Service {
     private volatile long lastRecoveryAttemptNanos;
     private volatile boolean surfaceRecoveryPending;
     private int resizeFailures;
+    // MediaProjection is change-driven on some phones. A motionless white screen
+    // may deliver just ONE frame, while the detector expects three confirmations.
+    // Confirm that observation over a short time window rather than treating
+    // the absence of two redundant frames as absence of white.
+    private static final long WHITE_CONFIRM_INTERVAL_MS = 55L;
+    private static final long WHITE_CONFIRM_MAX_AGE_NS = TimeUnit.MILLISECONDS.toNanos(280);
+    private PixelTriggerMonitorEngine.Sample pendingWhite;
+    private long pendingWhiteAtNanos;
+    private int repeatedWhiteConfirms;
+    private final Runnable confirmStationaryWhite = new Runnable() {
+        @Override public void run() {
+            if (shuttingDown || !running || !monitoringActive || editing
+                    || !settings.enabled() || !settings.monitoringEnabled()
+                    || pendingWhite == null
+                    || System.nanoTime() - pendingWhiteAtNanos > WHITE_CONFIRM_MAX_AGE_NS
+                    || repeatedWhiteConfirms >= 2) return;
+            synchronized (engine) {
+                if (engine.state() == PixelTriggerMonitorEngine.State.ARMED
+                        || !pendingWhite.isArmingWhite()) return;
+                engine.process(pendingWhite);
+            }
+            repeatedWhiteConfirms++;
+            if (repeatedWhiteConfirms < 2) {
+                captureHandler.postDelayed(this, WHITE_CONFIRM_INTERVAL_MS);
+            }
+        }
+    };
+
+    private void resetStationaryWhite() {
+        pendingWhite = null;
+        pendingWhiteAtNanos = 0L;
+        repeatedWhiteConfirms = 0;
+        if (captureHandler != null) captureHandler.removeCallbacks(confirmStationaryWhite);
+    }
+
+    private void queueStationaryWhite(PixelTriggerMonitorEngine.Sample sample) {
+        captureHandler.removeCallbacks(confirmStationaryWhite);
+        if (!sample.isArmingWhite()
+                || engine.state() == PixelTriggerMonitorEngine.State.ARMED) {
+            pendingWhite = null;
+            return;
+        }
+        pendingWhite = sample;
+        pendingWhiteAtNanos = System.nanoTime();
+        repeatedWhiteConfirms = 0;
+        captureHandler.postDelayed(confirmStationaryWhite, WHITE_CONFIRM_INTERVAL_MS);
+    }
+
     private final Runnable captureWatchdog = new Runnable() {
         @Override public void run() {
             try {
@@ -349,6 +397,7 @@ public final class FreezeMonitorService extends Service {
                 if (justRecovered) mainHandler.post(this::clearRecoveryNotification);
                 synchronized (engine) {
                     engine.process(sample);
+                    queueStationaryWhite(sample);
                     if (monitorColor == COLOR_NOT_READY) {
                         PixelTriggerMonitorEngine.State state = engine.state();
                         int color = state == PixelTriggerMonitorEngine.State.FIRED ? COLOR_FIRED
@@ -358,9 +407,11 @@ public final class FreezeMonitorService extends Service {
                     }
                 }
             } else {
+                resetStationaryWhite();
                 frameFailures++;
             }
         } catch (Throwable error) {
+            resetStationaryWhite();
             frameFailures++;
             // A single corrupt frame must not turn an ON session into a misleading OFF state.
             mainHandler.post(() -> {
@@ -405,6 +456,7 @@ public final class FreezeMonitorService extends Service {
                 try { old.close(); } catch (Throwable ignored) { }
             }
 
+            resetStationaryWhite();
             synchronized (engine) { engine.reset(); }
             repositionOverlay();
             RobotFreezeOrchestrator.instance().resetVisualCycle();
@@ -473,6 +525,7 @@ public final class FreezeMonitorService extends Service {
                     !"No new captured frames".equals(reason))) {
                 cancelFreezeTimeout();
                 GreatEngine.instance().freezeCore().setHoldTrigger(false);
+                resetStationaryWhite();
                 synchronized (engine) { engine.reset(); }
                 RobotFreezeOrchestrator.instance().onMonitoringResumed();
             }
@@ -596,6 +649,7 @@ public final class FreezeMonitorService extends Service {
 
     private void pauseMonitoring() {
         monitoringActive = false;
+        resetStationaryWhite();
         cancelFreezeTimeout();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
         synchronized (engine) { engine.reset(); }
@@ -615,6 +669,7 @@ public final class FreezeMonitorService extends Service {
 
     private void enterEditMode() {
         editing = true;
+        resetStationaryWhite();
         monitoringActive = false;
         settings.setMonitoringEnabled(false);
         dragState = null;
@@ -639,6 +694,7 @@ public final class FreezeMonitorService extends Service {
     }
 
     private void resetDetector(String status) {
+        resetStationaryWhite();
         cancelFreezeTimeout();
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
         synchronized (engine) { engine.reset(); }
@@ -858,6 +914,7 @@ public final class FreezeMonitorService extends Service {
     private void stopMonitor() {
         if (shuttingDown) return;
         shuttingDown = true;
+        resetStationaryWhite();
         running = false;
         editing = false;
         monitoringActive = false;
@@ -899,6 +956,7 @@ public final class FreezeMonitorService extends Service {
     }
 
     @Override public void onDestroy() {
+        resetStationaryWhite();
         running = false;
         editing = false;
         monitoringActive = false;
