@@ -100,6 +100,7 @@ public final class FreezeMonitorService extends Service {
     private volatile long lastImageFrameNanos;
     private volatile int frameFailures;
     private volatile int surfaceRecoveryAttempts;
+    private volatile long lastRecoveryAttemptNanos;
     private volatile boolean surfaceRecoveryPending;
     private int resizeFailures;
     private final Runnable captureWatchdog = new Runnable() {
@@ -110,7 +111,9 @@ public final class FreezeMonitorService extends Service {
                         && projection != null && virtualDisplay != null && !captureResizePending) {
                     long idleNs = System.nanoTime() - lastImageFrameNanos;
                     if (CaptureLivenessPolicy.shouldRecover(
-                            idleNs, frameFailures, surfaceRecoveryAttempts, surfaceRecoveryPending)) {
+                            idleNs, frameFailures, surfaceRecoveryAttempts,
+                            System.nanoTime() - lastRecoveryAttemptNanos,
+                            surfaceRecoveryPending)) {
                         surfaceRecoveryPending = true;
                         mainHandler.post(() -> recoverCaptureSurface(
                                 frameFailures >= CaptureLivenessPolicy.FAILURE_TRIGGER
@@ -278,6 +281,7 @@ public final class FreezeMonitorService extends Service {
         lastImageFrameNanos = System.nanoTime();
         frameFailures = 0;
         surfaceRecoveryAttempts = 0;
+        lastRecoveryAttemptNanos = 0L;
         resizeFailures = 0;
         surfaceRecoveryPending = false;
         clearRecoveryNotification();
@@ -426,10 +430,10 @@ public final class FreezeMonitorService extends Service {
         surfaceRecoveryPending = false;
         if (shuttingDown || !running || !monitoringActive || editing || captureResizePending
                 || !settings.enabled() || !settings.monitoringEnabled()
-                || projection == null || virtualDisplay == null
-                || surfaceRecoveryAttempts >= CaptureLivenessPolicy.MAX_RECOVERY_ATTEMPTS) return;
+                || projection == null || virtualDisplay == null) return;
 
         surfaceRecoveryAttempts++;
+        lastRecoveryAttemptNanos = System.nanoTime();
         ImageReader replacement = null;
         try {
             Point size = screenSize();
@@ -467,7 +471,7 @@ public final class FreezeMonitorService extends Service {
             setVisual(COLOR_NOT_READY, reason + " • surface refreshed, checking frames");
         } catch (Throwable e) {
             lastImageFrameNanos = System.nanoTime();
-            if (surfaceRecoveryAttempts >= CaptureLivenessPolicy.MAX_RECOVERY_ATTEMPTS) {
+            if (surfaceRecoveryAttempts >= CaptureLivenessPolicy.FAST_RECOVERY_ATTEMPTS) {
                 if ("No new captured frames".equals(reason)) {
                     // No frames can simply mean a perfectly static display.
                     // Keep the user's ON state and previous white baseline.
