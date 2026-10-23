@@ -94,9 +94,11 @@ public final class RobotFreezeOrchestrator {
             nextPeriodicAtNanos = 0L;
             if (periodicEnd != null) periodicEnd.cancel(false);
             periodicEnd = null;
+            // Keep ownership clear and throttle cancellation inside the same
+            // critical section as periodic activation. Never cancel a new cycle.
+            GreatEngine.instance().freezeCore().setPeriodicHoldTrigger(false);
+            GlobalRobotOutboundThrottle.instance().cancelActiveCycle();
         }
-        GreatEngine.instance().freezeCore().setPeriodicHoldTrigger(false);
-        GlobalRobotOutboundThrottle.instance().cancelActiveCycle();
     }
 
     public void visualFreezeStarted() {
@@ -162,11 +164,12 @@ public final class RobotFreezeOrchestrator {
             if (!periodicFreezeActive) return;
             periodicFreezeActive = false;
             GreatEngine.instance().freezeCore().setPeriodicHoldTrigger(false);
-        }
-        if (FreezeMonitorService.isMonitoringActive()) {
-            GlobalRobotOutboundThrottle.instance().finishPeriodicFreezeAndStartPostThrottle();
-        } else {
-            GlobalRobotOutboundThrottle.instance().cancelActiveCycle();
+            // A monitor OFF/ON occurring concurrently cannot inherit the old post phase.
+            if (FreezeMonitorService.isMonitoringActive()) {
+                GlobalRobotOutboundThrottle.instance().finishPeriodicFreezeAndStartPostThrottle();
+            } else {
+                GlobalRobotOutboundThrottle.instance().cancelActiveCycle();
+            }
         }
     }
 
