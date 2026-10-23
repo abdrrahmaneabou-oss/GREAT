@@ -65,6 +65,18 @@ public final class GreatMainActivity extends Activity {
     private FreezeHistoryStore freezeHistory;
     private MediaProjectionManager projectionManager;
     private TextView configState;
+    private TextView vpnRuntimeState;
+    private boolean runtimeStatusVisible;
+    private final Runnable runtimeStatusRefresh = new Runnable() {
+        @Override public void run() {
+            if (!runtimeStatusVisible) return;
+            if (vpnRuntimeState != null) {
+                vpnRuntimeState.setText("VPN: " + GreatVpnService.publicStatus()
+                        + "\nMONITOR: " + FreezeMonitorService.status());
+            }
+            handler.postDelayed(this, 1000L);
+        }
+    };
     private TextView targetHeading;
     private TextView robotTimeoutValue;
     private LinearLayout targetList;
@@ -173,6 +185,9 @@ public final class GreatMainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        runtimeStatusVisible = true;
+        handler.removeCallbacks(runtimeStatusRefresh);
+        handler.post(runtimeStatusRefresh);
         refreshFreezeHistory();
         if (detailedFreezeExpanded) refreshDetailedFreezeHistory();
         if (Settings.canDrawOverlays(this)) {
@@ -224,9 +239,17 @@ public final class GreatMainActivity extends Activity {
         return card;
     }
 
+    @Override protected void onPause() {
+        runtimeStatusVisible = false;
+        handler.removeCallbacks(runtimeStatusRefresh);
+        super.onPause();
+    }
+
     private View vpnCard() {
         LinearLayout card = card();
         add(card, text("VPN", 11, ACCENT, true), 0);
+        vpnRuntimeState = text("VPN: checking…", 12, MUTED, false);
+        add(card, vpnRuntimeState, 8);
         TextView start = button("START VPN", true);
         start.setOnClickListener(v -> requestVpn());
         add(card, start, 12);
