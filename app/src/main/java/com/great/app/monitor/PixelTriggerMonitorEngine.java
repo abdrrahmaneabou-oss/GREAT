@@ -92,6 +92,14 @@ public final class PixelTriggerMonitorEngine {
         setState(State.WAITING_FOR_WHITE);
     }
 
+    /** Called at the deadline; still requires white for rearm, but no throttle survives expiry. */
+    public void expireVisualFreeze() {
+        if (!robotPolicyEnabled || state != State.FIRED) return;
+        visualFreezeRan = false;
+        robotFreeze.finishVisualCycle(false);
+        com.great.app.transport.GlobalRobotOutboundThrottle.instance().cancelActiveCycle();
+    }
+
     public void process(Sample sample) {
         if (sample == null || sample.count() == 0) return;
         switch (state) {
