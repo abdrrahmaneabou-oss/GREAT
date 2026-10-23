@@ -39,6 +39,12 @@ public final class GreatVpnService extends VpnService {
     private static volatile String lastStartFailure;
     private volatile TunnelTransport transport;
 
+    public static boolean isTransportConnected() {
+        GreatVpnService service = activeService;
+        TunnelTransport current = service == null ? null : service.transport;
+        return current != null && current.state() == TransportState.CONNECTED;
+    }
+
     public static String publicStatus() {
         GreatVpnService service = activeService;
         if (service == null) return lastStartFailure == null ? "STOPPED" : lastStartFailure;
