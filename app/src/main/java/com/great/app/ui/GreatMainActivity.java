@@ -72,8 +72,14 @@ public final class GreatMainActivity extends Activity {
         @Override public void run() {
             if (!runtimeStatusVisible) return;
             if (vpnRuntimeState != null) {
+                String monitorStatus = FreezeMonitorService.status();
+                if (!FreezeMonitorService.isRunning() && monitorSettings != null
+                        && monitorSettings.monitoringEnabled()
+                        && "Monitor stopped".equals(monitorStatus)) {
+                    monitorStatus = "Requested ON • screen capture permission required";
+                }
                 vpnRuntimeState.setText("VPN: " + GreatVpnService.publicStatus()
-                        + "\nMONITOR: " + FreezeMonitorService.status());
+                        + "\nMONITOR: " + monitorStatus);
             }
             handler.postDelayed(this, 1000L);
         }
@@ -132,7 +138,9 @@ public final class GreatMainActivity extends Activity {
         applySavedVisualPostThrottleSettings();
         setContentView(buildContent());
         refreshConfig();
-        handleAction(getIntent());
+        // Do not relaunch the projection permission request from the retained
+        // Activity intent after rotation. The pending request is in saved state.
+        if (state == null) handleAction(getIntent());
     }
 
     private void applySavedPayloadSettings() {
