@@ -11,6 +11,7 @@ import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.Switch;
 import android.widget.TextView;
+import java.util.WeakHashMap;
 
 /** Keeps the original open, vertically scrolling cards while applying the newer calm palette. */
 final class LegacyPaletteUi {
@@ -21,6 +22,9 @@ final class LegacyPaletteUi {
     private static final int TEXT = 0xfff5f7fb;
     private static final int MUTED = 0xff929bad;
     private static final int ACCENT = 0xffb69cff;
+    // Each card/view only needs its base styling once. Re-creating a background
+    // on every global layout caused redundant draws and could overwrite live UI.
+    private static final WeakHashMap<View, Boolean> STYLED = new WeakHashMap<>();
 
     private LegacyPaletteUi() { }
 
@@ -34,7 +38,8 @@ final class LegacyPaletteUi {
 
         for (int i = 0; i < column.getChildCount(); i++) {
             View item = column.getChildAt(i);
-            if (i >= 3 && item instanceof ViewGroup) {
+            if (i >= 3 && item instanceof ViewGroup
+                    && !Boolean.TRUE.equals(STYLED.get(item))) {
                 item.setBackground(cardBg(activity));
             }
             styleTree(activity, item);
@@ -42,6 +47,7 @@ final class LegacyPaletteUi {
     }
 
     private static void styleTree(Activity activity, View view) {
+        if (Boolean.TRUE.equals(STYLED.put(view, Boolean.TRUE))) return;
         if (view instanceof EditText) {
             EditText input = (EditText) view;
             input.setTextColor(TEXT);
