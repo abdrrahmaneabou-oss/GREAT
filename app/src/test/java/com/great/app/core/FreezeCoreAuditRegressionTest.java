@@ -143,4 +143,24 @@ public final class FreezeCoreAuditRegressionTest {
             assertTrue(recorded.get().payloadRangeChanged());
         }
     }
+
+    @Test public void changingRampHoldAndDurationUpdatesCurrentFreeze() {
+        try (Fixture f = new Fixture()) {
+            f.core.setRampProfile(5000, 5000, 0, 0, 0, 0);
+            f.controller.set(Capability.FREEZE, true);
+            assertEquals(PacketDecision.PASS, f.decide());
+            f.core.setRampProfile(120, 120, 100, 100, 100, 100);
+            assertEquals(PacketDecision.HOLD, f.decide());
+        }
+    }
+
+    @Test public void enablingRampMidCycleActuallyStartsIt() {
+        try (Fixture f = new Fixture()) {
+            f.core.setRampProfile(0, 0, 100, 100, 100, 100);
+            f.controller.set(Capability.FREEZE, true);
+            assertEquals(PacketDecision.HOLD, f.decide());
+            f.core.setRampProfile(5000, 5000, 0, 0, 0, 0);
+            assertEquals(PacketDecision.PASS, f.decide());
+        }
+    }
 }
