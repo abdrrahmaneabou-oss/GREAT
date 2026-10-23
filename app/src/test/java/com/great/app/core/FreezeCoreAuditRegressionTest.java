@@ -163,4 +163,35 @@ public final class FreezeCoreAuditRegressionTest {
             assertEquals(PacketDecision.PASS, f.decide());
         }
     }
+
+    @Test public void randomPayloadSwitchAndBoundsApplyImmediately() {
+        try (Fixture f = new Fixture()) {
+            f.core.setPayloadRange(25, 90);
+            f.core.setRandomPayloadRange(20, 20, 50, 50);
+            f.core.setHoldTrigger(true);
+            f.core.setRandomPayloadRangeEnabled(true);
+            assertEquals(20, f.core.payloadMin());
+            assertEquals(50, f.core.payloadMax());
+            f.core.setRandomPayloadRange(30, 30, 60, 60);
+            assertEquals(30, f.core.payloadMin());
+            assertEquals(60, f.core.payloadMax());
+            f.core.setRandomPayloadRangeEnabled(false);
+            assertEquals(25, f.core.payloadMin());
+            assertEquals(90, f.core.payloadMax());
+            assertFalse(f.core.randomPayloadRangeEnabled());
+        }
+    }
+
+    @Test public void randomInclusiveBoundariesAreNeverExceeded() {
+        try (Fixture f = new Fixture()) {
+            f.core.setRandomPayloadRange(14, 15, 120, 150);
+            f.core.setRandomPayloadRangeEnabled(true);
+            for (int cycle = 0; cycle < 250; cycle++) {
+                f.core.setHoldTrigger(true);
+                assertTrue(f.core.payloadMin() >= 14 && f.core.payloadMin() <= 15);
+                assertTrue(f.core.payloadMax() >= 120 && f.core.payloadMax() <= 150);
+                f.core.setHoldTrigger(false);
+            }
+        }
+    }
 }
