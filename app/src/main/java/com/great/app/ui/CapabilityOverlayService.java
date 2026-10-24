@@ -17,15 +17,21 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.FrameLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.great.app.config.FreezeEntrySettingsStore;
 import com.great.app.config.MonitorSettingsStore;
 import com.great.app.core.Capability;
+import com.great.app.core.FreezeCore;
 import com.great.app.core.GreatEngine;
 import com.great.app.vpn.GreatVpnService;
 
-/** Two floating capability controls. Detailed Freeze logs remain inside GREAT. */
+import java.util.Map;
+import java.util.TreeMap;
+
+/** Two floating capability controls plus a compact latest-cycle packet summary. */
 public final class CapabilityOverlayService extends Service {
     public static final String ACTION_SHOW = "com.great.app.action.SHOW_CAPABILITIES";
     public static final String ACTION_HIDE = "com.great.app.action.HIDE_CAPABILITIES";
@@ -35,18 +41,25 @@ public final class CapabilityOverlayService extends Service {
     private static final String KEY_ROBOT_Y = "robot_y";
     private static final String KEY_FREEZE_X = "freeze_x";
     private static final String KEY_FREEZE_Y = "freeze_y";
+    private static final String KEY_SUMMARY_X = "packet_summary_x";
+    private static final String KEY_SUMMARY_Y = "packet_summary_y";
+    private static final String KEY_SUMMARY_COLLAPSED = "packet_summary_collapsed";
     private static final int ACTIVE = 0xffef5350;
     private static final int INACTIVE = 0xff7b808c;
     private static final int EDITING = 0xffffc107;
     private static final int RECOVERING = 0xffdc75ff;
     private static final int SIZE_DP = 58;
+    private static final int SUMMARY_CONTROL_DP = 28;
     private static final long LONG_PRESS_MS = 300L;
+    private static final float SUMMARY_BASE_TEXT_SP = 13f;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable renderTick = new Runnable() {
         @Override public void run() {
             renderStates();
-            if (robotView != null || freezeView != null) {
+            updatePacketSummary();
+            updateSummaryExpandPosition();
+            if (robotView != null || freezeView != null || packetSummaryView != null) {
                 handler.postDelayed(this, 150);
             }
         }
@@ -55,10 +68,21 @@ public final class CapabilityOverlayService extends Service {
     private WindowManager windowManager;
     private SharedPreferences prefs;
     private MonitorSettingsStore monitorSettings;
+    private FreezeEntrySettingsStore freezeEntrySettings;
     private TextView robotView;
     private TextView freezeView;
+    private FrameLayout packetSummaryView;
+    private TextView packetSummaryText;
+    private TextView summaryCollapseView;
+    private TextView summaryResizeView;
+    private TextView summaryExpandView;
     private WindowManager.LayoutParams robotParams;
     private WindowManager.LayoutParams freezeParams;
+    private WindowManager.LayoutParams packetSummaryParams;
+    private WindowManager.LayoutParams summaryExpandParams;
+    private float summaryScale = FreezeEntrySettingsStore.DEFAULT_SUMMARY_SCALE;
+    private boolean summaryCollapsed;
+    private long renderedSummaryCycle = Long.MIN_VALUE;
     private int lastRobotColor = Integer.MIN_VALUE;
     private int lastFreezeColor = Integer.MIN_VALUE;
 
@@ -66,14 +90,10 @@ public final class CapabilityOverlayService extends Service {
         super.onCreate();
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        // Clean up obsolete floating-log position and collapsed state, while
-        // retaining both control-circle locations and the in-app Freeze history.
-        if (prefs.contains("packet_summary_x") || prefs.contains("packet_summary_y")
-                || prefs.contains("packet_summary_collapsed")) {
-            prefs.edit().remove("packet_summary_x").remove("packet_summary_y")
-                    .remove("packet_summary_collapsed").apply();
-        }
         monitorSettings = new MonitorSettingsStore(this);
+        freezeEntrySettings = new FreezeEntrySettingsStore(this);
+        summaryScale = freezeEntrySettings.summaryScale();
+        summaryCollapsed = prefs.getBoolean(KEY_SUMMARY_COLLAPSED, false);
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -88,7 +108,7 @@ public final class CapabilityOverlayService extends Service {
     }
 
     private void showOverlay() {
-        if (robotView != null || freezeView != null) return;
+        if (robotView != null || freezeView != null || packetSummaryView != null) return;
         Point screen = screenSize();
         int size = dp(SIZE_DP);
         int x = Math.max(0, screen.x - size - dp(18));
@@ -107,9 +127,25 @@ public final class CapabilityOverlayService extends Service {
         robotView.setOnTouchListener(new CircleTouch(true));
         windowManager.addView(robotView, robotParams);
 
+        packetSummaryView = packetSummaryView();
+        packetSummaryParams = summaryParams(
+                prefs.getInt(KEY_SUMMARY_X, dp(18)),
+                prefs.getInt(KEY_SUMMARY_Y, dp(110)));
+        packetSummaryView.setOnTouchListener(new SummaryMoveTouch());
+        packetSummaryView.setVisibility(View.GONE);
+        windowManager.addView(packetSummaryView, packetSummaryParams);
+        applySummaryScale(false);
+
+        summaryExpandView = summaryExpandView();
+        summaryExpandParams = circleParams(0, 0, dp(SUMMARY_CONTROL_DP));
+        summaryExpandView.setVisibility(summaryCollapsed ? View.VISIBLE : View.GONE);
+        windowManager.addView(summaryExpandView, summaryExpandParams);
+
         clampAndUpdate(robotView, robotParams, KEY_ROBOT_X, KEY_ROBOT_Y, false);
         clampAndUpdate(freezeView, freezeParams, KEY_FREEZE_X, KEY_FREEZE_Y, false);
+        updateSummaryExpandPosition();
         renderStates();
+        updatePacketSummary();
         handler.post(renderTick);
     }
 
@@ -125,9 +161,89 @@ public final class CapabilityOverlayService extends Service {
         return view;
     }
 
+    private FrameLayout packetSummaryView() {
+        FrameLayout root = new FrameLayout(this);
+        root.setClickable(true);
+        root.setFocusable(false);
+
+        packetSummaryText = new TextView(this);
+        packetSummaryText.setTextColor(Color.WHITE);
+        packetSummaryText.setTypeface(android.graphics.Typeface.MONOSPACE);
+        packetSummaryText.setGravity(Gravity.START);
+        packetSummaryText.setIncludeFontPadding(false);
+        packetSummaryText.setSingleLine(false);
+        packetSummaryText.setLineSpacing(0f, 1.0f);
+        packetSummaryText.setClickable(false);
+        FrameLayout.LayoutParams textParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.START);
+        root.addView(packetSummaryText, textParams);
+
+        summaryCollapseView = summaryControl("−");
+        summaryCollapseView.setContentDescription("Hide packet summary");
+        summaryCollapseView.setOnClickListener(v -> collapseSummary());
+        FrameLayout.LayoutParams collapseParams = new FrameLayout.LayoutParams(
+                dp(SUMMARY_CONTROL_DP), dp(SUMMARY_CONTROL_DP), Gravity.TOP | Gravity.END);
+        root.addView(summaryCollapseView, collapseParams);
+
+        summaryResizeView = summaryControl("↘");
+        summaryResizeView.setContentDescription("Resize packet summary");
+        summaryResizeView.setOnTouchListener(new SummaryResizeTouch());
+        FrameLayout.LayoutParams resizeParams = new FrameLayout.LayoutParams(
+                dp(SUMMARY_CONTROL_DP), dp(SUMMARY_CONTROL_DP), Gravity.BOTTOM | Gravity.END);
+        root.addView(summaryResizeView, resizeParams);
+
+        return root;
+    }
+
+    private TextView summaryControl(String label) {
+        TextView view = new TextView(this);
+        view.setText(label);
+        view.setTextColor(Color.WHITE);
+        view.setTextSize(18);
+        view.setGravity(Gravity.CENTER);
+        view.setIncludeFontPadding(false);
+        view.setBackground(controlBg(0xb3262a35));
+        view.setClickable(true);
+        view.setFocusable(false);
+        return view;
+    }
+
+    private TextView summaryExpandView() {
+        TextView view = summaryControl("+");
+        view.setTextSize(20);
+        view.setBackground(controlBg(0xee242833));
+        view.setContentDescription("Show packet summary");
+        view.setOnClickListener(v -> expandSummary());
+        return view;
+    }
+
+    private GradientDrawable controlBg(int color) {
+        GradientDrawable d = new GradientDrawable();
+        d.setShape(GradientDrawable.OVAL);
+        d.setColor(color);
+        d.setStroke(dp(1), 0x99ffffff);
+        return d;
+    }
+
     private WindowManager.LayoutParams circleParams(int x, int y, int size) {
         WindowManager.LayoutParams p = new WindowManager.LayoutParams(
                 size, size,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL |
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT);
+        p.gravity = Gravity.TOP | Gravity.START;
+        p.x = x;
+        p.y = y;
+        return p;
+    }
+
+    private WindowManager.LayoutParams summaryParams(int x, int y) {
+        WindowManager.LayoutParams p = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE |
                         WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL |
@@ -158,6 +274,109 @@ public final class CapabilityOverlayService extends Service {
                 lastFreezeColor = color;
             }
         }
+    }
+
+    private void updatePacketSummary() {
+        if (packetSummaryView == null || packetSummaryParams == null || packetSummaryText == null) return;
+        FreezeCore.CycleStats stats = GreatEngine.instance().freezeCore().latestCycleStats();
+        if (stats == null) return;
+        if (stats.startedAtMillis() == renderedSummaryCycle) return;
+
+        String summary = buildPacketSummary(stats);
+        renderedSummaryCycle = stats.startedAtMillis();
+        packetSummaryText.setText(summary);
+        if (summary.isEmpty()) {
+            packetSummaryView.setVisibility(View.GONE);
+            return;
+        }
+        if (!summaryCollapsed) {
+            packetSummaryView.setVisibility(View.VISIBLE);
+            packetSummaryView.requestLayout();
+            packetSummaryView.post(this::clampSummaryToScreen);
+        }
+    }
+
+    private static String buildPacketSummary(FreezeCore.CycleStats stats) {
+        TreeMap<Integer, Integer> notFrozen = new TreeMap<>();
+        TreeMap<Integer, Integer> frozen = new TreeMap<>();
+        for (int i = 0; i < stats.traceCount(); i++) {
+            if (!stats.traceHas(i, FreezeCore.TRACE_REACHED_PAYLOAD)) continue;
+            int bytes = stats.tracePayloadBytes(i);
+            boolean wasFrozen = stats.traceHas(i, FreezeCore.TRACE_FROZEN);
+            TreeMap<Integer, Integer> target = wasFrozen ? frozen : notFrozen;
+            target.put(bytes, target.getOrDefault(bytes, 0) + 1);
+        }
+        if (notFrozen.isEmpty() && frozen.isEmpty()) return "";
+
+        StringBuilder out = new StringBuilder();
+        appendGroups(out, notFrozen, false);
+        if (!notFrozen.isEmpty() && !frozen.isEmpty()) out.append('\n');
+        appendGroups(out, frozen, true);
+        if (out.length() > 0 && out.charAt(out.length() - 1) == '\n') out.setLength(out.length() - 1);
+        return out.toString();
+    }
+
+    private static void appendGroups(StringBuilder out, TreeMap<Integer, Integer> groups, boolean frozen) {
+        for (Map.Entry<Integer, Integer> entry : groups.entrySet()) {
+            out.append(entry.getKey()).append("B ×").append(entry.getValue())
+                    .append(frozen ? " Freeze" : " No Freeze").append('\n');
+        }
+    }
+
+    private void applySummaryScale(boolean persist) {
+        summaryScale = clamp(summaryScale,
+                FreezeEntrySettingsStore.MIN_SUMMARY_SCALE,
+                FreezeEntrySettingsStore.MAX_SUMMARY_SCALE);
+        if (packetSummaryView != null && packetSummaryText != null) {
+            packetSummaryText.setTextSize(SUMMARY_BASE_TEXT_SP * summaryScale);
+            int horizontal = Math.max(dp(4), Math.round(dp(6) * summaryScale));
+            int vertical = Math.max(dp(3), Math.round(dp(4) * summaryScale));
+            int controlRoom = dp(SUMMARY_CONTROL_DP);
+            packetSummaryView.setPadding(horizontal, vertical, horizontal, vertical);
+            packetSummaryText.setPadding(0, controlRoom, controlRoom, controlRoom);
+            GradientDrawable background = new GradientDrawable();
+            background.setColor(0xd91a1d25);
+            background.setCornerRadius(Math.max(1f, dp(7) * summaryScale));
+            background.setStroke(Math.max(1, Math.round(dp(1) * summaryScale)), 0x99ffffff);
+            packetSummaryView.setBackground(background);
+            packetSummaryView.requestLayout();
+            packetSummaryView.post(this::clampSummaryToScreen);
+        }
+        if (persist) freezeEntrySettings.setSummaryScale(summaryScale);
+    }
+
+    private void collapseSummary() {
+        summaryCollapsed = true;
+        prefs.edit().putBoolean(KEY_SUMMARY_COLLAPSED, true).apply();
+        if (packetSummaryView != null) packetSummaryView.setVisibility(View.GONE);
+        if (summaryExpandView != null) summaryExpandView.setVisibility(View.VISIBLE);
+        updateSummaryExpandPosition();
+    }
+
+    private void expandSummary() {
+        summaryCollapsed = false;
+        prefs.edit().putBoolean(KEY_SUMMARY_COLLAPSED, false).apply();
+        if (summaryExpandView != null) summaryExpandView.setVisibility(View.GONE);
+        if (packetSummaryView != null && packetSummaryText != null
+                && packetSummaryText.getText() != null && packetSummaryText.length() > 0) {
+            packetSummaryView.setVisibility(View.VISIBLE);
+            packetSummaryView.requestLayout();
+            packetSummaryView.post(this::clampSummaryToScreen);
+        }
+    }
+
+    private void updateSummaryExpandPosition() {
+        if (summaryExpandView == null || summaryExpandParams == null || robotParams == null) return;
+        int size = Math.max(dp(SUMMARY_CONTROL_DP), summaryExpandParams.width);
+        Point screen = screenSize();
+        int targetX = robotParams.x + robotParams.width - size / 2;
+        int targetY = robotParams.y - size / 2;
+        int x = clamp(targetX, 0, Math.max(0, screen.x - size));
+        int y = clamp(targetY, 0, Math.max(0, screen.y - size));
+        if (summaryExpandParams.x == x && summaryExpandParams.y == y) return;
+        summaryExpandParams.x = x;
+        summaryExpandParams.y = y;
+        try { windowManager.updateViewLayout(summaryExpandView, summaryExpandParams); } catch (Throwable ignored) { }
     }
 
     private void onRobotClick() {
@@ -261,6 +480,7 @@ public final class CapabilityOverlayService extends Service {
                     }
                     if (dragging) {
                         move(view, p, startX + Math.round(dx), startY + Math.round(dy));
+                        if (robot) updateSummaryExpandPosition();
                     }
                     return true;
                 }
@@ -269,9 +489,8 @@ public final class CapabilityOverlayService extends Service {
                     if (dragging) {
                         if (robot) {
                             savePosition(p, KEY_ROBOT_X, KEY_ROBOT_Y);
-                        } else {
-                            savePosition(p, KEY_FREEZE_X, KEY_FREEZE_Y);
-                        }
+                            updateSummaryExpandPosition();
+                        } else savePosition(p, KEY_FREEZE_X, KEY_FREEZE_Y);
                     } else if (!longPressed) {
                         if (robot) onRobotClick(); else onFreezeClick();
                     }
@@ -291,6 +510,71 @@ public final class CapabilityOverlayService extends Service {
         }
     }
 
+    private final class SummaryMoveTouch implements View.OnTouchListener {
+        private float downRawX, downRawY;
+        private int startX, startY;
+        private boolean dragging;
+
+        @Override public boolean onTouch(View view, MotionEvent event) {
+            if (packetSummaryParams == null) return false;
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.getRawX();
+                    downRawY = event.getRawY();
+                    startX = packetSummaryParams.x;
+                    startY = packetSummaryParams.y;
+                    dragging = false;
+                    return true;
+                }
+                case MotionEvent.ACTION_MOVE -> {
+                    float dx = event.getRawX() - downRawX;
+                    float dy = event.getRawY() - downRawY;
+                    if (!dragging && Math.hypot(dx, dy) > dp(5)) dragging = true;
+                    if (dragging) moveSummary(startX + Math.round(dx), startY + Math.round(dy));
+                    return true;
+                }
+                case MotionEvent.ACTION_UP -> {
+                    if (dragging) saveSummaryPosition();
+                    return true;
+                }
+                case MotionEvent.ACTION_CANCEL -> { return true; }
+                default -> { return true; }
+            }
+        }
+    }
+
+    private final class SummaryResizeTouch implements View.OnTouchListener {
+        private float downRawX, downRawY;
+        private float startScale;
+
+        @Override public boolean onTouch(View view, MotionEvent event) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.getRawX();
+                    downRawY = event.getRawY();
+                    startScale = summaryScale;
+                    return true;
+                }
+                case MotionEvent.ACTION_MOVE -> {
+                    float dx = event.getRawX() - downRawX;
+                    float dy = event.getRawY() - downRawY;
+                    float delta = (dx + dy) * 0.5f;
+                    float factor = 1f + delta / Math.max(1f, dp(150));
+                    summaryScale = clamp(startScale * factor,
+                            FreezeEntrySettingsStore.MIN_SUMMARY_SCALE,
+                            FreezeEntrySettingsStore.MAX_SUMMARY_SCALE);
+                    applySummaryScale(false);
+                    return true;
+                }
+                case MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    applySummaryScale(true);
+                    return true;
+                }
+                default -> { return true; }
+            }
+        }
+    }
+
     private void move(View view, WindowManager.LayoutParams p, int x, int y) {
         Point screen = screenSize();
         p.x = clamp(x, 0, Math.max(0, screen.x - p.width));
@@ -298,8 +582,28 @@ public final class CapabilityOverlayService extends Service {
         try { windowManager.updateViewLayout(view, p); } catch (Throwable ignored) { }
     }
 
+    private void moveSummary(int x, int y) {
+        if (packetSummaryView == null || packetSummaryParams == null) return;
+        Point screen = screenSize();
+        int width = Math.max(1, packetSummaryView.getWidth());
+        int height = Math.max(1, packetSummaryView.getHeight());
+        packetSummaryParams.x = clamp(x, 0, Math.max(0, screen.x - width));
+        packetSummaryParams.y = clamp(y, 0, Math.max(0, screen.y - height));
+        try { windowManager.updateViewLayout(packetSummaryView, packetSummaryParams); } catch (Throwable ignored) { }
+    }
+
+    private void clampSummaryToScreen() {
+        if (packetSummaryView == null || packetSummaryParams == null || packetSummaryView.getVisibility() != View.VISIBLE) return;
+        moveSummary(packetSummaryParams.x, packetSummaryParams.y);
+    }
+
     private void savePosition(WindowManager.LayoutParams p, String keyX, String keyY) {
         prefs.edit().putInt(keyX, p.x).putInt(keyY, p.y).apply();
+    }
+
+    private void saveSummaryPosition() {
+        if (packetSummaryParams == null) return;
+        savePosition(packetSummaryParams, KEY_SUMMARY_X, KEY_SUMMARY_Y);
     }
 
     private void clampAndUpdate(View view, WindowManager.LayoutParams p,
@@ -321,15 +625,26 @@ public final class CapabilityOverlayService extends Service {
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private static int clamp(int value, int min, int max) { return Math.max(min, Math.min(max, value)); }
+    private static float clamp(float value, float min, float max) { return Math.max(min, Math.min(max, value)); }
 
     private void removeOverlay() {
         handler.removeCallbacks(renderTick);
         if (robotView != null) try { windowManager.removeView(robotView); } catch (Throwable ignored) { }
         if (freezeView != null) try { windowManager.removeView(freezeView); } catch (Throwable ignored) { }
+        if (packetSummaryView != null) try { windowManager.removeView(packetSummaryView); } catch (Throwable ignored) { }
+        if (summaryExpandView != null) try { windowManager.removeView(summaryExpandView); } catch (Throwable ignored) { }
         robotView = null;
         freezeView = null;
+        packetSummaryView = null;
+        packetSummaryText = null;
+        summaryCollapseView = null;
+        summaryResizeView = null;
+        summaryExpandView = null;
         robotParams = null;
         freezeParams = null;
+        packetSummaryParams = null;
+        summaryExpandParams = null;
+        renderedSummaryCycle = Long.MIN_VALUE;
         lastRobotColor = Integer.MIN_VALUE;
         lastFreezeColor = Integer.MIN_VALUE;
     }
