@@ -804,8 +804,7 @@ public final class GreatMainActivity extends Activity {
         // user intent if Android reclaims the process immediately afterward.
         getSharedPreferences("great_vpn_service_runtime", MODE_PRIVATE).edit()
                 .putBoolean("vpn_start_requested", false).commit();
-        monitorSettings.setMonitoringEnabled(false);
-        monitorSettings.setEnabled(false);
+        monitorSettings.disableAndCommit();
         overlayPending = false;
         monitorCapturePending = false;
         monitorEditAfterStart = false;
