@@ -74,19 +74,18 @@ final class ReleaseTuningUi {
     }
 
     private static void applyReleaseSettings(Context context) {
-        ReleaseSettingsStore store = new ReleaseSettingsStore(context);
+        ReleaseSettingsStore.Snapshot store = new ReleaseSettingsStore(context).snapshot();
         FreezeCore core = GreatEngine.instance().freezeCore();
+        core.setReleaseRanges(store.dropMin(), store.dropMax(), store.burstMin(),
+                store.burstMax(), store.delayMinMs(), store.delayMaxMs());
         core.setReleaseDropEnabled(store.dropEnabled());
         core.setReleaseBurstEnabled(store.burstEnabled());
         core.setReleaseDelayEnabled(store.delayEnabled());
-        core.setReleaseDropRange(store.dropMinPercent(), store.dropMaxPercent());
-        core.setReleaseBurstRange(store.burstMin(), store.burstMax());
-        core.setReleaseDelayRangeMs(store.delayMinMs(), store.delayMaxMs());
     }
 
     private static void configureLightThrottleSave(Activity activity, View root) {
-        View card = findContainingView(root, "ROBOT LIGHT OUTBOUND THROTTLE");
-        if (card == null) card = findContainingView(root, "الخنق الخفيف بالتوازي مع التجميد");
+        View card = findDirectCard(root, "ROBOT LIGHT OUTBOUND THROTTLE");
+        if (card == null) card = findDirectCard(root, "الخنق الخفيف بالتوازي مع التجميد");
         if (card == null) return;
 
         EditText startMinInput = findEditTextByHint(card, "Min Start Delay");
@@ -231,27 +230,24 @@ final class ReleaseTuningUi {
 
         TextView save = button(activity, "SAVE RELEASE SETTINGS");
         save.setOnClickListener(v -> {
+            // Parse into local values first. No settings can change after a partial validation.
+            final int[] drop = {store.dropMinPercent(), store.dropMaxPercent()};
+            final int[] burst = {store.burstMin(), store.burstMax()};
+            final int[] delay = {store.delayMinMs(), store.delayMaxMs()};
             if (!saveOptionalRange(dropMin, dropMax,
                     FreezeCore.MIN_RELEASE_DROP_LIMIT_PERCENT,
-                    FreezeCore.MAX_RELEASE_DROP_LIMIT_PERCENT,
-                    "%", (min, max) -> {
-                        store.setDropRange(min, max);
-                        core.setReleaseDropRange(min, max);
-                    })) return;
+                    FreezeCore.MAX_RELEASE_DROP_LIMIT_PERCENT, "%",
+                    (min, max) -> { drop[0] = min; drop[1] = max; })) return;
             if (!saveOptionalRange(burstMin, burstMax,
                     FreezeCore.MIN_RELEASE_BURST_LIMIT,
-                    FreezeCore.MAX_RELEASE_BURST_LIMIT,
-                    "packets", (min, max) -> {
-                        store.setBurstRange(min, max);
-                        core.setReleaseBurstRange(min, max);
-                    })) return;
+                    FreezeCore.MAX_RELEASE_BURST_LIMIT, "packets",
+                    (min, max) -> { burst[0] = min; burst[1] = max; })) return;
             if (!saveOptionalRange(delayMin, delayMax,
                     FreezeCore.MIN_RELEASE_DELAY_LIMIT_MS,
-                    FreezeCore.MAX_RELEASE_DELAY_LIMIT_MS,
-                    "ms", (min, max) -> {
-                        store.setDelayRangeMs(min, max);
-                        core.setReleaseDelayRangeMs(min, max);
-                    })) return;
+                    FreezeCore.MAX_RELEASE_DELAY_LIMIT_MS, "ms",
+                    (min, max) -> { delay[0] = min; delay[1] = max; })) return;
+            store.setRanges(drop[0], drop[1], burst[0], burst[1], delay[0], delay[1]);
+            core.setReleaseRanges(drop[0], drop[1], burst[0], burst[1], delay[0], delay[1]);
             Toast.makeText(activity, "Gradual release settings saved", Toast.LENGTH_LONG).show();
         });
         add(activity, card, save, 14);
@@ -340,6 +336,19 @@ final class ReleaseTuningUi {
             blankRecursive(group.getChildAt(i), fixedPayloadSaved, randomPayloadSaved,
                     lightStartSaved, lightDurationSaved, postSaved);
         }
+    }
+
+    /** Only search sibling cards, never their shared ScrollView ancestor. */
+    private static View findDirectCard(View root, String expected) {
+        ScrollView scroll = findScrollView(root);
+        if (scroll == null || scroll.getChildCount() == 0
+                || !(scroll.getChildAt(0) instanceof ViewGroup)) return null;
+        ViewGroup cards = (ViewGroup) scroll.getChildAt(0);
+        for (int i = 0; i < cards.getChildCount(); i++) {
+            View child = cards.getChildAt(i);
+            if (containsText(child, expected)) return child;
+        }
+        return null;
     }
 
     private static View findContainingView(View view, String expected) {

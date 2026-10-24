@@ -92,4 +92,58 @@ public final class PixelTriggerMonitorEngineTest {
         engine.process(white);
         assertEquals(PixelTriggerMonitorEngine.State.WAITING_FOR_WHITE, engine.state());
     }
+
+    @Test public void yellowIndicatorDoesNotMaskWhiteWhenProbesAreInsideClearCenter() {
+        PixelTriggerMonitorEngine engine = deterministic(null);
+        PixelTriggerMonitorEngine.Sample whiteBelowReticle = sample(
+                0xffffff, 0xffffff, 0xffffff, 0xffffff, 0xffffff);
+        engine.process(whiteBelowReticle);
+        engine.process(whiteBelowReticle);
+        engine.process(whiteBelowReticle);
+        assertEquals("White under the detector must arm it", PixelTriggerMonitorEngine.State.ARMED,
+                engine.state());
+    }
+
+    @Test public void disappearanceOfWhiteToNonblackColorFiresAndRearmsOnWhite() {
+        PixelTriggerMonitorEngine engine = deterministic(null);
+        PixelTriggerMonitorEngine.Sample white = sample(0xffffff, 0xffffff, 0xffffff, 0xffffff, 0xffffff);
+        PixelTriggerMonitorEngine.Sample brightBlue = sample(0x008cff, 0xffffff, 0xffffff,
+                0xffffff, 0xffffff);
+        engine.process(white);
+        engine.process(white);
+        engine.process(white);
+        assertEquals(PixelTriggerMonitorEngine.State.ARMED, engine.state());
+        engine.process(brightBlue);
+        assertEquals("White-to-bright-color is white loss, not a reason to ignore input",
+                PixelTriggerMonitorEngine.State.FIRED, engine.state());
+        engine.process(white);
+        engine.process(white);
+        engine.process(white);
+        assertEquals(PixelTriggerMonitorEngine.State.ARMED, engine.state());
+    }
+
+    @Test public void whiteCenterRemainingWhiteDoesNotFireWhenOnlyNeighborsChange() {
+        PixelTriggerMonitorEngine engine = deterministic(null);
+        PixelTriggerMonitorEngine.Sample white = sample(0xffffff, 0xffffff, 0xffffff, 0xffffff, 0xffffff);
+        engine.process(white);
+        engine.process(white);
+        engine.process(white);
+        engine.process(sample(0xffffff, 0x101010, 0x101010, 0x101010, 0x101010));
+        assertEquals(PixelTriggerMonitorEngine.State.ARMED, engine.state());
+    }
+
+    @Test public void centerOnlyTinySensorStillRecognizesWhiteLossAndRearm() {
+        PixelTriggerMonitorEngine engine = deterministic(null);
+        PixelTriggerMonitorEngine.Sample white = sample(0xffffff);
+        PixelTriggerMonitorEngine.Sample nonWhite = sample(0x4477dd);
+        for (int i = 0; i < 3; i++) engine.process(white);
+        assertEquals("Center pixel alone must arm when white is present",
+                PixelTriggerMonitorEngine.State.ARMED, engine.state());
+        engine.process(nonWhite);
+        assertEquals("Tiny circle must detect disappearance of white",
+                PixelTriggerMonitorEngine.State.FIRED, engine.state());
+        for (int i = 0; i < 3; i++) engine.process(white);
+        assertEquals("Return of white must rearm",
+                PixelTriggerMonitorEngine.State.ARMED, engine.state());
+    }
 }

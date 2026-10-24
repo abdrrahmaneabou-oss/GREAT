@@ -54,29 +54,54 @@ public final class CapabilitySettingsStore {
         if (!prefs.contains(FREEZE_PAYLOAD_RANDOM_ENABLED)) {
             editor = prefs.edit().putBoolean(FREEZE_PAYLOAD_RANDOM_ENABLED, true);
         }
-        if (!prefs.contains(FREEZE_PAYLOAD_MIN_FROM) || !prefs.contains(FREEZE_PAYLOAD_MIN_TO)
-                || !prefs.contains(FREEZE_PAYLOAD_MAX_FROM) || !prefs.contains(FREEZE_PAYLOAD_MAX_TO)) {
+        // Seed only missing keys; never clobber saved neighbors in partial data.
+        if (!prefs.contains(FREEZE_PAYLOAD_MIN_FROM)) {
             if (editor == null) editor = prefs.edit();
-            editor.putInt(FREEZE_PAYLOAD_MIN_FROM, DEFAULT_RANDOM_PAYLOAD_MIN_FROM)
-                    .putInt(FREEZE_PAYLOAD_MIN_TO, DEFAULT_RANDOM_PAYLOAD_MIN_TO)
-                    .putInt(FREEZE_PAYLOAD_MAX_FROM, DEFAULT_RANDOM_PAYLOAD_MAX_FROM)
-                    .putInt(FREEZE_PAYLOAD_MAX_TO, DEFAULT_RANDOM_PAYLOAD_MAX_TO);
+            editor.putInt(FREEZE_PAYLOAD_MIN_FROM, DEFAULT_RANDOM_PAYLOAD_MIN_FROM);
         }
-        if (!prefs.contains(ROBOT_LIGHT_START_MIN_MS) || !prefs.contains(ROBOT_LIGHT_START_MAX_MS)
-                || !prefs.contains(ROBOT_LIGHT_DURATION_MIN_MS) || !prefs.contains(ROBOT_LIGHT_DURATION_MAX_MS)) {
+        if (!prefs.contains(FREEZE_PAYLOAD_MIN_TO)) {
             if (editor == null) editor = prefs.edit();
-            editor.putInt(ROBOT_LIGHT_START_MIN_MS, DEFAULT_LIGHT_START_MIN_MS)
-                    .putInt(ROBOT_LIGHT_START_MAX_MS, DEFAULT_LIGHT_START_MAX_MS)
-                    .putInt(ROBOT_LIGHT_DURATION_MIN_MS, DEFAULT_LIGHT_DURATION_MIN_MS)
-                    .putInt(ROBOT_LIGHT_DURATION_MAX_MS, DEFAULT_LIGHT_DURATION_MAX_MS);
+            editor.putInt(FREEZE_PAYLOAD_MIN_TO, DEFAULT_RANDOM_PAYLOAD_MIN_TO);
         }
-        if (!prefs.contains(ROBOT_WHITE_RETURN_START_MIN_MS) || !prefs.contains(ROBOT_WHITE_RETURN_START_MAX_MS)
-                || !prefs.contains(ROBOT_WHITE_RETURN_DURATION_MIN_MS) || !prefs.contains(ROBOT_WHITE_RETURN_DURATION_MAX_MS)) {
+        if (!prefs.contains(FREEZE_PAYLOAD_MAX_FROM)) {
             if (editor == null) editor = prefs.edit();
-            editor.putInt(ROBOT_WHITE_RETURN_START_MIN_MS, DEFAULT_WHITE_RETURN_START_MIN_MS)
-                    .putInt(ROBOT_WHITE_RETURN_START_MAX_MS, DEFAULT_WHITE_RETURN_START_MAX_MS)
-                    .putInt(ROBOT_WHITE_RETURN_DURATION_MIN_MS, DEFAULT_WHITE_RETURN_DURATION_MIN_MS)
-                    .putInt(ROBOT_WHITE_RETURN_DURATION_MAX_MS, DEFAULT_WHITE_RETURN_DURATION_MAX_MS);
+            editor.putInt(FREEZE_PAYLOAD_MAX_FROM, DEFAULT_RANDOM_PAYLOAD_MAX_FROM);
+        }
+        if (!prefs.contains(FREEZE_PAYLOAD_MAX_TO)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(FREEZE_PAYLOAD_MAX_TO, DEFAULT_RANDOM_PAYLOAD_MAX_TO);
+        }
+        if (!prefs.contains(ROBOT_LIGHT_START_MIN_MS)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(ROBOT_LIGHT_START_MIN_MS, DEFAULT_LIGHT_START_MIN_MS);
+        }
+        if (!prefs.contains(ROBOT_LIGHT_START_MAX_MS)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(ROBOT_LIGHT_START_MAX_MS, DEFAULT_LIGHT_START_MAX_MS);
+        }
+        if (!prefs.contains(ROBOT_LIGHT_DURATION_MIN_MS)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(ROBOT_LIGHT_DURATION_MIN_MS, DEFAULT_LIGHT_DURATION_MIN_MS);
+        }
+        if (!prefs.contains(ROBOT_LIGHT_DURATION_MAX_MS)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(ROBOT_LIGHT_DURATION_MAX_MS, DEFAULT_LIGHT_DURATION_MAX_MS);
+        }
+        if (!prefs.contains(ROBOT_WHITE_RETURN_START_MIN_MS)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(ROBOT_WHITE_RETURN_START_MIN_MS, DEFAULT_WHITE_RETURN_START_MIN_MS);
+        }
+        if (!prefs.contains(ROBOT_WHITE_RETURN_START_MAX_MS)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(ROBOT_WHITE_RETURN_START_MAX_MS, DEFAULT_WHITE_RETURN_START_MAX_MS);
+        }
+        if (!prefs.contains(ROBOT_WHITE_RETURN_DURATION_MIN_MS)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(ROBOT_WHITE_RETURN_DURATION_MIN_MS, DEFAULT_WHITE_RETURN_DURATION_MIN_MS);
+        }
+        if (!prefs.contains(ROBOT_WHITE_RETURN_DURATION_MAX_MS)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(ROBOT_WHITE_RETURN_DURATION_MAX_MS, DEFAULT_WHITE_RETURN_DURATION_MAX_MS);
         }
         if (editor != null) editor.apply();
     }

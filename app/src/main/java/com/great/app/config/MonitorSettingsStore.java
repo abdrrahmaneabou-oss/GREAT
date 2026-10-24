@@ -38,6 +38,12 @@ public final class MonitorSettingsStore {
         prefs.edit().putBoolean(KEY_MONITORING_ENABLED, enabled).apply();
     }
 
+    /** Explicit shutdown: persist BOTH OFF flags in one synchronous transaction. */
+    public boolean disableAndCommit() {
+        return prefs.edit().putBoolean(KEY_ENABLED, false)
+                .putBoolean(KEY_MONITORING_ENABLED, false).commit();
+    }
+
     public float centerXFraction() {
         return clampFraction(prefs.getFloat(KEY_CENTER_X, 0.80f));
     }

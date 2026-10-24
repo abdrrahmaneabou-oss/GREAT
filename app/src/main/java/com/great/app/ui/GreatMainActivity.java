@@ -1,6 +1,10 @@
 package com.great.app.ui;
 
 import android.app.Activity;
+import android.app.NotificationManager;
+import android.content.Context;
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.content.Intent;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -17,6 +21,7 @@ import android.provider.Settings;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
+import android.view.WindowInsets;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -52,6 +57,7 @@ public final class GreatMainActivity extends Activity {
     private static final int PICK_CONFIG = 1001;
     private static final int VPN_PERMISSION = 1002;
     private static final int MONITOR_CAPTURE = 1004;
+    private static final int NOTIFICATIONS_PERMISSION = 1007;
     private static final int BG = 0xff0c0e14;
     private static final int SURFACE = 0xff151822;
     private static final int TEXT = 0xfff2f3fa;
@@ -65,6 +71,34 @@ public final class GreatMainActivity extends Activity {
     private FreezeHistoryStore freezeHistory;
     private MediaProjectionManager projectionManager;
     private TextView configState;
+    private TextView vpnRuntimeState;
+    private boolean runtimeStatusVisible;
+    private boolean shuttingDownEverything;
+    private final Runnable runtimeStatusRefresh = new Runnable() {
+        @Override public void run() {
+            if (!runtimeStatusVisible) return;
+            if (vpnRuntimeState != null) {
+                String monitorStatus = FreezeMonitorService.status();
+                if (!FreezeMonitorService.isRunning() && monitorSettings != null
+                        && monitorSettings.monitoringEnabled()
+                        && "Monitor stopped".equals(monitorStatus)) {
+                    monitorStatus = "Requested ON • screen capture permission required";
+                }
+                String notificationStatus = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                        && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED
+                        ? "\nNOTIFICATIONS: hidden • allow in Android Settings" : "";
+                long throttleBypassed = GlobalRobotOutboundThrottle.instance().backlogBypassed();
+                String pressure = throttleBypassed <= 0L ? ""
+                        : "\nTHROTTLE OVERLOAD: " + throttleBypassed
+                          + " packets passed without delay (buffer limit)";
+                vpnRuntimeState.setText("BUILD: micro-reticle-v3 • " + getPackageName()
+                        + "\nVPN: " + GreatVpnService.publicStatus()
+                        + "\nMONITOR: " + monitorStatus + notificationStatus + pressure);
+            }
+            handler.postDelayed(this, 1000L);
+        }
+    };
     private TextView targetHeading;
     private TextView robotTimeoutValue;
     private LinearLayout targetList;
@@ -94,9 +128,19 @@ public final class GreatMainActivity extends Activity {
     private boolean monitorCapturePending;
     private boolean monitorEditAfterStart;
     private boolean monitorStartActiveAfterCapture;
+    private static final String STATE_MONITOR_ACTIVE = "great_pending_monitor_active";
+    private static final String STATE_MONITOR_EDIT = "great_pending_monitor_edit";
+    private static final String STATE_MONITOR_CAPTURE = "great_pending_capture";
+    private static final String STATE_OVERLAY_PENDING = "great_pending_overlay";
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        if (state != null) {
+            monitorStartActiveAfterCapture = state.getBoolean(STATE_MONITOR_ACTIVE, false);
+            monitorEditAfterStart = state.getBoolean(STATE_MONITOR_EDIT, false);
+            monitorCapturePending = state.getBoolean(STATE_MONITOR_CAPTURE, false);
+            overlayPending = state.getBoolean(STATE_OVERLAY_PENDING, false);
+        }
         targetStore = new TargetAppsStore(this);
         monitorSettings = new MonitorSettingsStore(this);
         capabilitySettings = new CapabilitySettingsStore(this);
@@ -109,7 +153,13 @@ public final class GreatMainActivity extends Activity {
         applySavedVisualPostThrottleSettings();
         setContentView(buildContent());
         refreshConfig();
-        handleAction(getIntent());
+        // Do not relaunch the projection permission request from the retained
+        // Activity intent after rotation. The pending request is in saved state.
+        if (state == null) handleAction(getIntent());
+        String launchAction = getIntent() == null ? null : getIntent().getAction();
+        if (launchAction == null || Intent.ACTION_MAIN.equals(launchAction)) {
+            requestNotificationPermissionOnce();
+        }
     }
 
     private void applySavedPayloadSettings() {
@@ -145,7 +195,7 @@ public final class GreatMainActivity extends Activity {
     }
 
     private void handleAction(Intent intent) {
-        if (intent == null) return;
+        if (intent == null || shuttingDownEverything) return;
         if (ACTION_REQUEST_MONITOR_CAPTURE.equals(intent.getAction())) {
             handler.post(() -> requestMonitorCapture(true, false));
         } else if (ACTION_REQUEST_MONITOR_EDIT.equals(intent.getAction())) {
@@ -153,8 +203,19 @@ public final class GreatMainActivity extends Activity {
         }
     }
 
+    @Override protected void onSaveInstanceState(Bundle outState) {
+        outState.putBoolean(STATE_MONITOR_ACTIVE, monitorStartActiveAfterCapture);
+        outState.putBoolean(STATE_MONITOR_EDIT, monitorEditAfterStart);
+        outState.putBoolean(STATE_MONITOR_CAPTURE, monitorCapturePending);
+        outState.putBoolean(STATE_OVERLAY_PENDING, overlayPending);
+        super.onSaveInstanceState(outState);
+    }
+
     @Override protected void onResume() {
         super.onResume();
+        runtimeStatusVisible = true;
+        handler.removeCallbacks(runtimeStatusRefresh);
+        handler.post(runtimeStatusRefresh);
         refreshFreezeHistory();
         if (detailedFreezeExpanded) refreshDetailedFreezeHistory();
         if (Settings.canDrawOverlays(this)) {
@@ -188,9 +249,27 @@ public final class GreatMainActivity extends Activity {
         add(root, robotTimeoutCard(), 14);
         add(root, showCirclesCard(), 14);
         add(root, hideCirclesCard(), 14);
+        add(root, shutdownEverythingCard(), 36);
 
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
+        // Android 15/16 enforce edge-to-edge for modern targets. Keep the scrolling
+        // cards below the real status bar and above the gesture/navigation area.
+        scroll.setOnApplyWindowInsetsListener((view, insets) -> {
+            int top;
+            int bottom;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                top = insets.getInsets(WindowInsets.Type.statusBars()).top;
+                bottom = insets.getInsets(WindowInsets.Type.navigationBars()).bottom;
+            } else {
+                top = insets.getSystemWindowInsetTop();
+                bottom = insets.getSystemWindowInsetBottom();
+            }
+            if (view.getPaddingTop() != top || view.getPaddingBottom() != bottom) {
+                view.setPadding(0, top, 0, bottom);
+            }
+            return insets;
+        });
         scroll.addView(root, new ScrollView.LayoutParams(-1, -2));
         return scroll;
     }
@@ -206,9 +285,17 @@ public final class GreatMainActivity extends Activity {
         return card;
     }
 
+    @Override protected void onPause() {
+        runtimeStatusVisible = false;
+        handler.removeCallbacks(runtimeStatusRefresh);
+        super.onPause();
+    }
+
     private View vpnCard() {
         LinearLayout card = card();
         add(card, text("VPN", 11, ACCENT, true), 0);
+        vpnRuntimeState = text("VPN: checking…", 12, MUTED, false);
+        add(card, vpnRuntimeState, 8);
         TextView start = button("START VPN", true);
         start.setOnClickListener(v -> requestVpn());
         add(card, start, 12);
@@ -465,7 +552,7 @@ public final class GreatMainActivity extends Activity {
         detailedFreezeHistoryHeading.setMinHeight(dp(48));
         detailedFreezeHistoryHeading.setGravity(Gravity.CENTER_VERTICAL);
         add(card, detailedFreezeHistoryHeading, 0);
-        add(card, text("Tap to inspect every arrived packet by arrival number and UDP payload size.",
+        add(card, text("Inspect arrival order and UDP payload size (up to 10,000 traced packets per cycle).",
                 12, MUTED, false), 4);
         detailedFreezeHistoryBody = column();
         detailedFreezeHistoryBody.setVisibility(View.GONE);
@@ -497,11 +584,34 @@ public final class GreatMainActivity extends Activity {
             add(detailedFreezeHistoryBody, text(
                     "#" + cycle + "  " + time.format(new Date(record.startedAtMillis))
                             + "  •  " + record.source
-                            + "  •  Payload >= " + record.payloadMin + " && <= " + record.payloadMax,
+                            + (record.payloadRangeChanged ? "  •  Initial Payload: " : "  •  Payload: ")
+                             + record.payloadMin + "–" + record.payloadMax
+                             + (record.payloadRangeChanged ? " • changed during cycle" : ""),
                     13, TEXT, true), cycle == 1 ? 4 : 16);
 
-            StringBuilder lines = new StringBuilder(Math.max(96, record.trace.length * 44));
-            for (int i = 0; i < record.trace.length; i++) {
+            if (record.arrived > record.trace.length) {
+                add(detailedFreezeHistoryBody, text(
+                        "Trace limited to first " + record.trace.length + " of "
+                                + record.arrived + " arrivals; counters include all packets.",
+                        11, MUTED, false), 4);
+            }
+            LinearLayout pages = column();
+            add(detailedFreezeHistoryBody, pages, 6);
+            appendTracePage(pages, record, 0);
+            cycle++;
+        }
+    }
+
+    /**
+     * Large traces (up to 10,000 packets) are rendered in small pages. The full
+     * saved history remains inspectable without forcing one enormous TextView layout.
+     */
+    private void appendTracePage(LinearLayout target, FreezeHistoryStore.DetailRecord record,
+                                 int start) {
+        final int end = Math.min(record.trace.length, start + 200);
+        if (start >= end) return;
+            StringBuilder lines = new StringBuilder(Math.max(96, (end - start) * 44));
+            for (int i = start; i < end; i++) {
                 int value = record.trace[i];
                 lines.append('#').append(i + 1).append(" • ");
                 boolean payloadKnown = (value & FreezeCore.TRACE_PAYLOAD_KNOWN) != 0;
@@ -524,10 +634,18 @@ public final class GreatMainActivity extends Activity {
                 } else {
                     lines.append("PAYLOAD PASS • NOT FROZEN");
                 }
-                if (i + 1 < record.trace.length) lines.append('\n');
+                if (i + 1 < end) lines.append('\n');
             }
-            add(detailedFreezeHistoryBody, text(lines.toString(), 11, MUTED, false), 6);
-            cycle++;
+            add(target, text(lines.toString(), 11, MUTED, false), 6);
+
+        if (end < record.trace.length) {
+            TextView more = button("SHOW NEXT " + Math.min(200, record.trace.length - end)
+                    + " PACKETS • " + end + "/" + record.trace.length, true);
+            more.setOnClickListener(v -> {
+                target.removeView(more);
+                appendTracePage(target, record, end);
+            });
+            add(target, more, 8);
         }
     }
 
@@ -665,6 +783,60 @@ public final class GreatMainActivity extends Activity {
         return card;
     }
 
+    private View shutdownEverythingCard() {
+        LinearLayout card = card();
+        add(card, text("اغلاق كل شيء", 15, ACCENT, true), 0);
+        add(card, text("إيقاف VPN وجلسة التقاط الشاشة والمراقبة والدوائر والتجميد والخنق "
+                + "والإشعارات، ثم إغلاق GREAT. لن تُحذف إعداداتك أو سجلاتك.",
+                12, MUTED, false), 9);
+        TextView off = button("اغلاق كل شيء", false);
+        off.setOnClickListener(v -> shutdownEverything());
+        add(card, off, 14);
+        return card;
+    }
+
+    private void shutdownEverything() {
+        if (shuttingDownEverything) return;
+        shuttingDownEverything = true;
+        // Persist the user's explicit OFF choice BEFORE stopping services. The
+        // VPN auto-recovery watchdog and START_STICKY must never resurrect VPN.
+        // commit() is intentional: an asynchronous apply() can lose the last
+        // user intent if Android reclaims the process immediately afterward.
+        getSharedPreferences("great_vpn_service_runtime", MODE_PRIVATE).edit()
+                .putBoolean("vpn_start_requested", false).commit();
+        monitorSettings.disableAndCommit();
+        overlayPending = false;
+        monitorCapturePending = false;
+        monitorEditAfterStart = false;
+        monitorStartActiveAfterCapture = false;
+        runtimeStatusVisible = false;
+        handler.removeCallbacks(runtimeStatusRefresh);
+
+        // Stop real Android services, not merely their status indicators.
+        // onDestroy closes the tunnel, releases MediaProjection/ImageReader,
+        // removes floating windows and stops foreground notifications.
+        stopService(new Intent(this, FreezeMonitorService.class));
+        stopService(new Intent(this, CapabilityOverlayService.class));
+        stopService(new Intent(this, GreatVpnService.class));
+
+        // Also neutralize packet state if one service was already absent.
+        GlobalRobotOutboundThrottle.instance().setFeatureEnabled(false);
+        GreatEngine.instance().reset();
+
+        // Cancel the app's own foreground/recovery notifications. Do not
+        // cancel unrelated notifications belonging to other applications.
+        NotificationManager notifications =
+                (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (notifications != null) {
+            notifications.cancel(4107);
+            notifications.cancel(4108);
+            notifications.cancel(4109);
+        }
+        // A cached Android process may remain in memory, but no capture,
+        // VPN, overlay or periodic polling service should remain active.
+        finishAndRemoveTask();
+    }
+
     private View targetCard() {
         LinearLayout card = card();
         targetHeading = text("", 14, ACCENT, true);
@@ -694,8 +866,14 @@ public final class GreatMainActivity extends Activity {
     }
 
     private void adjustRobotTimeout(int deltaTenths) {
-        monitorSettings.setMaxFreezeTenths(monitorSettings.maxFreezeTenths() + deltaTenths);
+        int old = monitorSettings.maxFreezeTenths();
+        int updated = monitorSettings.setMaxFreezeTenths(old + deltaTenths);
+        if (updated == old) return;
         if (robotTimeoutValue != null) robotTimeoutValue.setText(formatRobotTimeout());
+        if (FreezeMonitorService.isRunning()) {
+            startService(new Intent(this, FreezeMonitorService.class)
+                    .setAction(FreezeMonitorService.ACTION_REFRESH_TIMEOUT));
+        }
     }
 
     private String formatRobotTimeout() {
@@ -709,17 +887,31 @@ public final class GreatMainActivity extends Activity {
     }
 
     private void startGreat() {
-        startService(new Intent(this, GreatVpnService.class).setAction(GreatVpnService.ACTION_START));
+        Intent vpn = new Intent(this, GreatVpnService.class)
+                .setAction(GreatVpnService.ACTION_START);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(vpn);
+        else startService(vpn);
         toast("Starting VPN…");
+    }
+
+    private void requestNotificationPermissionOnce() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
+                || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                == PackageManager.PERMISSION_GRANTED) return;
+        android.content.SharedPreferences prefs =
+                getSharedPreferences("great_ui_permissions", MODE_PRIVATE);
+        if (prefs.getBoolean("asked_notifications", false)) return;
+        prefs.edit().putBoolean("asked_notifications", true).apply();
+        requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                NOTIFICATIONS_PERMISSION);
     }
 
     private void stopGreat() {
         GreatEngine.instance().capabilities().set(Capability.FREEZE, false);
         GreatEngine.instance().freezeCore().setHoldTrigger(false);
+        // STOP VPN must not silently switch OFF the separate Robot monitor.
+        // A capture session remains active until the user explicitly turns the monitor off.
         startService(new Intent(this, GreatVpnService.class).setAction(GreatVpnService.ACTION_STOP));
-        if (FreezeMonitorService.isRunning()) {
-            startService(new Intent(this, FreezeMonitorService.class).setAction(FreezeMonitorService.ACTION_STOP));
-        }
         toast("VPN stopped");
     }
 
@@ -744,8 +936,8 @@ public final class GreatMainActivity extends Activity {
 
     private void ensureMonitorSessionForCircles() {
         if (FreezeMonitorService.isRunning()) return;
-        monitorSettings.setMonitoringEnabled(false);
-        monitorStartActiveAfterCapture = false;
+        // Showing controls must not silently erase an existing user request for monitoring.
+        monitorStartActiveAfterCapture = monitorSettings.monitoringEnabled();
         monitorEditAfterStart = false;
         launchCapturePrompt();
     }
@@ -787,24 +979,26 @@ public final class GreatMainActivity extends Activity {
     @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == MONITOR_CAPTURE) {
+            if (shuttingDownEverything) return;
             if (resultCode == RESULT_OK && data != null) {
                 monitorSettings.setMonitoringEnabled(monitorStartActiveAfterCapture);
                 Intent service = new Intent(this, FreezeMonitorService.class)
                         .setAction(FreezeMonitorService.ACTION_START)
                         .putExtra(FreezeMonitorService.EXTRA_RESULT_CODE, resultCode)
-                        .putExtra(FreezeMonitorService.EXTRA_RESULT_DATA, data);
+                        .putExtra(FreezeMonitorService.EXTRA_RESULT_DATA, data)
+                        .putExtra(FreezeMonitorService.EXTRA_EDIT_AFTER_START, monitorEditAfterStart);
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(service);
                 else startService(service);
-                if (monitorEditAfterStart) {
-                    handler.postDelayed(() -> startService(new Intent(this, FreezeMonitorService.class)
-                            .setAction(FreezeMonitorService.ACTION_EDIT)), 450);
-                }
+
             } else toast("Screen capture permission is required for the monitor");
             monitorEditAfterStart = false;
             monitorStartActiveAfterCapture = false;
             return;
         }
-        if (requestCode == VPN_PERMISSION && resultCode == RESULT_OK) { startGreat(); return; }
+        if (requestCode == VPN_PERMISSION && resultCode == RESULT_OK) {
+            if (!shuttingDownEverything) startGreat();
+            return;
+        }
         if (requestCode == PICK_CONFIG && resultCode == RESULT_OK && data != null && data.getData() != null) {
             importConfig(data.getData());
         }

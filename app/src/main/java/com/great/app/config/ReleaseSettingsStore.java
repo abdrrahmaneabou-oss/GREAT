@@ -2,6 +2,7 @@ package com.great.app.config;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import java.util.Map;
 
 import com.great.app.core.FreezeCore;
 
@@ -30,17 +31,30 @@ public final class ReleaseSettingsStore {
     public ReleaseSettingsStore(Context context) {
         prefs = context.getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         SharedPreferences.Editor editor = null;
-        if (!prefs.contains(DROP_MIN) || !prefs.contains(DROP_MAX)) {
-            editor = prefs.edit().putInt(DROP_MIN, DEFAULT_DROP_MIN_PERCENT)
-                    .putInt(DROP_MAX, DEFAULT_DROP_MAX_PERCENT);
-        }
-        if (!prefs.contains(BURST_MIN) || !prefs.contains(BURST_MAX)) {
+        // A partial migration must not overwrite the user's valid existing values.
+        if (!prefs.contains(DROP_MIN)) {
             if (editor == null) editor = prefs.edit();
-            editor.putInt(BURST_MIN, DEFAULT_BURST_MIN).putInt(BURST_MAX, DEFAULT_BURST_MAX);
+            editor.putInt(DROP_MIN, DEFAULT_DROP_MIN_PERCENT);
         }
-        if (!prefs.contains(DELAY_MIN_MS) || !prefs.contains(DELAY_MAX_MS)) {
+        if (!prefs.contains(DROP_MAX)) {
             if (editor == null) editor = prefs.edit();
-            editor.putInt(DELAY_MIN_MS, DEFAULT_DELAY_MIN_MS).putInt(DELAY_MAX_MS, DEFAULT_DELAY_MAX_MS);
+            editor.putInt(DROP_MAX, DEFAULT_DROP_MAX_PERCENT);
+        }
+        if (!prefs.contains(BURST_MIN)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(BURST_MIN, DEFAULT_BURST_MIN);
+        }
+        if (!prefs.contains(BURST_MAX)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(BURST_MAX, DEFAULT_BURST_MAX);
+        }
+        if (!prefs.contains(DELAY_MIN_MS)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(DELAY_MIN_MS, DEFAULT_DELAY_MIN_MS);
+        }
+        if (!prefs.contains(DELAY_MAX_MS)) {
+            if (editor == null) editor = prefs.edit();
+            editor.putInt(DELAY_MAX_MS, DEFAULT_DELAY_MAX_MS);
         }
         if (editor != null) editor.apply();
     }
@@ -94,6 +108,59 @@ public final class ReleaseSettingsStore {
     public void setDelayRangeMs(int min, int max) {
         if (!validDelayRange(min, max)) throw new IllegalArgumentException("Delay range must be 0..5000 ms and ordered");
         prefs.edit().putInt(DELAY_MIN_MS, min).putInt(DELAY_MAX_MS, max).apply();
+    }
+
+    /** Persist all three ranges in a single preference transaction. */
+    public void setRanges(int dropMin, int dropMax, int burstMin, int burstMax,
+                          int delayMin, int delayMax) {
+        if (!validDropRange(dropMin, dropMax) || !validBurstRange(burstMin, burstMax)
+                || !validDelayRange(delayMin, delayMax)) {
+            throw new IllegalArgumentException("Invalid release settings");
+        }
+        prefs.edit().putInt(DROP_MIN, dropMin).putInt(DROP_MAX, dropMax)
+                .putInt(BURST_MIN, burstMin).putInt(BURST_MAX, burstMax)
+                .putInt(DELAY_MIN_MS, delayMin).putInt(DELAY_MAX_MS, delayMax).apply();
+    }
+
+    /** A consistent snapshot of all release values, even during a simultaneous save. */
+    public record Snapshot(boolean dropEnabled, boolean burstEnabled, boolean delayEnabled,
+                           int dropMin, int dropMax, int burstMin, int burstMax,
+                           int delayMinMs, int delayMaxMs) { }
+
+    public Snapshot snapshot() {
+        Map<String, ?> data = prefs.getAll();
+        int minDrop = prefInt(data, DROP_MIN, DEFAULT_DROP_MIN_PERCENT);
+        int maxDrop = prefInt(data, DROP_MAX, DEFAULT_DROP_MAX_PERCENT);
+        int minBurst = prefInt(data, BURST_MIN, DEFAULT_BURST_MIN);
+        int maxBurst = prefInt(data, BURST_MAX, DEFAULT_BURST_MAX);
+        int minDelay = prefInt(data, DELAY_MIN_MS, DEFAULT_DELAY_MIN_MS);
+        int maxDelay = prefInt(data, DELAY_MAX_MS, DEFAULT_DELAY_MAX_MS);
+        if (!validDropRange(minDrop, maxDrop)) {
+            minDrop = DEFAULT_DROP_MIN_PERCENT;
+            maxDrop = DEFAULT_DROP_MAX_PERCENT;
+        }
+        if (!validBurstRange(minBurst, maxBurst)) {
+            minBurst = DEFAULT_BURST_MIN;
+            maxBurst = DEFAULT_BURST_MAX;
+        }
+        if (!validDelayRange(minDelay, maxDelay)) {
+            minDelay = DEFAULT_DELAY_MIN_MS;
+            maxDelay = DEFAULT_DELAY_MAX_MS;
+        }
+        return new Snapshot(prefBool(data, DROP_ENABLED, true),
+                prefBool(data, BURST_ENABLED, true),
+                prefBool(data, DELAY_ENABLED, true),
+                minDrop, maxDrop, minBurst, maxBurst, minDelay, maxDelay);
+    }
+
+    private static int prefInt(Map<String, ?> data, String key, int fallback) {
+        Object value = data.get(key);
+        return value instanceof Integer ? (Integer) value : fallback;
+    }
+
+    private static boolean prefBool(Map<String, ?> data, String key, boolean fallback) {
+        Object value = data.get(key);
+        return value instanceof Boolean ? (Boolean) value : fallback;
     }
 
     private int rawDropMin() { return prefs.getInt(DROP_MIN, DEFAULT_DROP_MIN_PERCENT); }
